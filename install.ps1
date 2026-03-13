@@ -50,6 +50,22 @@ $OK = Read-Host "Installation starten? J/N"
 if ($OK -eq "N" -or $OK -eq "n") { exit 0 }
 Write-Host ""
 
+# Alte Installation bereinigen
+Write-Host "Bereinige alte Installation..." -ForegroundColor Yellow
+$svcAlt = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
+if ($svcAlt) {
+    & "C:\nssm\nssm.exe" stop dcp_automatisierung | Out-Null
+    Start-Sleep -Seconds 3
+    & "C:\nssm\nssm.exe" remove dcp_automatisierung confirm | Out-Null
+    Start-Sleep -Seconds 2
+}
+if (Test-Path "C:\dcp_automatisierung") {
+    Remove-Item -Path "C:\dcp_automatisierung" -Recurse -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+}
+Write-Host "Bereinigung abgeschlossen!" -ForegroundColor Gray
+Write-Host ""
+
 # ─── SCHRITT 1: PYTHON ──────────────────────────────────────
 Write-Host "[1/7] Pruefe Python..." -ForegroundColor Green
 try {
