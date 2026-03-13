@@ -965,12 +965,24 @@ if __name__ == "__main__":
 
 Write-Host "      Alle Scripts erstellt - OK" -ForegroundColor Gray
 
+# BOM fix - alle Dateien ohne BOM neu schreiben
+$utf8NoBomFix = New-Object System.Text.UTF8Encoding $false
+foreach ($file in Get-ChildItem "C:\dcp_automatisierung" -Recurse -Include *.py,*.yaml) {
+    $txt = [System.IO.File]::ReadAllText($file.FullName)
+    [System.IO.File]::WriteAllText($file.FullName, $txt, $utf8NoBomFix)
+}
+
 # ─── SCHRITT 7: VENV + PAKETE ───────────────────────────────
 Write-Host "[7/7] Installiere Python-Pakete (bitte warten)..." -ForegroundColor Green
 Set-Location "C:\dcp_automatisierung"
+if (Test-Path "C:\dcp_automatisierung\venv") {
+    Remove-Item -Path "C:\dcp_automatisierung\venv" -Recurse -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+}
 python -m venv venv
+Start-Sleep -Seconds 2
 & "C:\dcp_automatisierung\venv\Scripts\python.exe" -m pip install --upgrade pip -q
-& "C:\dcp_automatisierung\venv\Scripts\pip.exe" install requests pillow pytesseract pyyaml schedule selenium webdriver-manager watchdog -q
+& "C:\dcp_automatisierung\venv\Scripts\python.exe" -m pip install requests pillow pytesseract pyyaml schedule selenium webdriver-manager watchdog -q
 Write-Host "      Alle Pakete installiert - OK" -ForegroundColor Gray
 
 # ─── NSSM DIENST ────────────────────────────────────────────
