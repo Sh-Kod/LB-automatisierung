@@ -946,7 +946,7 @@ Write-Host "      Alle Scripts erstellt - OK" -ForegroundColor Gray
 Write-Host "[7/7] Installiere Python-Pakete (bitte warten)..." -ForegroundColor Green
 Set-Location "C:\dcp_automatisierung"
 python -m venv venv
-& "C:\dcp_automatisierung\venv\Scripts\pip.exe" install --upgrade pip -q
+& "C:\dcp_automatisierung\venv\Scripts\python.exe" -m pip install --upgrade pip -q
 & "C:\dcp_automatisierung\venv\Scripts\pip.exe" install requests pillow pytesseract pyyaml schedule selenium webdriver-manager watchdog -q
 Write-Host "      Alle Pakete installiert - OK" -ForegroundColor Gray
 
@@ -968,6 +968,12 @@ if ($dienst) {
 & "C:\nssm\nssm.exe" set dcp_automatisierung AppStderr "C:\dcp_automatisierung\logs\service_error.log" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung AppRestartDelay 5000 | Out-Null
 & "C:\nssm\nssm.exe" start dcp_automatisierung | Out-Null
+Start-Sleep -Seconds 3
+$svc = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
+if ($svc -and $svc.Status -eq "Paused") {
+    $svc.Continue()
+    Start-Sleep -Seconds 2
+}
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green
