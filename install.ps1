@@ -22,6 +22,9 @@ if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit 1
 }
 
+# UTF-8 ohne BOM Encoder
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+
 # ─── EINGABEN ───────────────────────────────────────────────
 Write-Host "Auf welchem Laufwerk sollen die Ordner erstellt werden?" -ForegroundColor Yellow
 Write-Host "Beispiel: E fuer E:\ oder C fuer C:\" -ForegroundColor Gray
@@ -149,13 +152,13 @@ doremi:
   ftp_pass: "ingest"
   web_user: "admin"
   web_pass: "1234"
-"@ | Set-Content -Path "C:\dcp_automatisierung\config.yaml" -Encoding UTF8
+"@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\config.yaml", $_, $utf8NoBom) }
 
 # naming_rules.yaml
-"regeln: []" | Set-Content -Path "C:\dcp_automatisierung\rules\naming_rules.yaml" -Encoding UTF8
+"regeln: []" | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\rules\naming_rules.yaml", $_, $utf8NoBom) }
 
 # __init__.py
-"" | Set-Content -Path "C:\dcp_automatisierung\modules\__init__.py" -Encoding UTF8
+"" | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\__init__.py", $_, $utf8NoBom) }
 
 # ── modules/logger.py ────────────────────────────────────────
 @'
@@ -180,7 +183,7 @@ def erstelle_logger():
     return logging.getLogger("dcp_automatisierung")
 
 logger = erstelle_logger()
-'@ | Set-Content -Path "C:\dcp_automatisierung\modules\logger.py" -Encoding UTF8
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\logger.py", $_, $utf8NoBom) }
 
 # ── modules/watcher.py ───────────────────────────────────────
 @'
@@ -197,7 +200,7 @@ def suche_neue_bilder(ordner):
         if Path(datei).suffix.lower() in ERLAUBTE_ENDUNGEN:
             bilder.append(os.path.join(ordner, datei))
     return bilder
-'@ | Set-Content -Path "C:\dcp_automatisierung\modules\watcher.py" -Encoding UTF8
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\watcher.py", $_, $utf8NoBom) }
 
 # ── modules/analyzer.py ──────────────────────────────────────
 @'
@@ -219,7 +222,7 @@ def lese_text_aus_bild(bildpfad):
     except Exception as e:
         print(f"OCR Fehler: {e}")
         return ""
-'@ | Set-Content -Path "C:\dcp_automatisierung\modules\analyzer.py" -Encoding UTF8
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\analyzer.py", $_, $utf8NoBom) }
 
 # ── modules/telegram_bot.py ──────────────────────────────────
 @'
@@ -242,6 +245,18 @@ def sende_nachricht(text):
         print("Telegram Nachricht gesendet!")
     except Exception as e:
         print(f"Telegram Fehler: {e}")
+
+def sende_bild(bildpfad, caption=""):
+    try:
+        config = lade_config()
+        token = config["telegram"]["token"]
+        chat_id = config["telegram"]["chat_id"]
+        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        with open(bildpfad, "rb") as f:
+            requests.post(url, data={"chat_id": chat_id, "caption": caption}, files={"photo": f}, timeout=30)
+        print("Telegram Bild gesendet!")
+    except Exception as e:
+        print(f"Telegram Bild Fehler: {e}")
 
 def warte_auf_antwort(timeout=300):
     try:
@@ -296,7 +311,7 @@ def starte_listener(callback):
                         threading.Thread(target=callback, args=(text,), daemon=True).start()
         except:
             time.sleep(5)
-'@ | Set-Content -Path "C:\dcp_automatisierung\modules\telegram_bot.py" -Encoding UTF8
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\telegram_bot.py", $_, $utf8NoBom) }
 
 # ── modules/naming.py ────────────────────────────────────────
 @'
@@ -305,7 +320,7 @@ import re
 import yaml
 from pathlib import Path
 from datetime import datetime
-from modules.telegram_bot import sende_nachricht, warte_auf_antwort
+from modules.telegram_bot import sende_nachricht, sende_bild, warte_auf_antwort
 
 REGELN_PFAD = "C:\\dcp_automatisierung\\rules\\naming_rules.yaml"
 
@@ -441,6 +456,10 @@ def bestimme_dcp_name_komplett(bildpfad, ocr_text):
         return f"LB_{bereinige_name(teile[-1])}"
 
     if vorschlag:
+        try:
+            sende_bild(bildpfad, caption=f"Neues Bild: {dateiname}")
+        except:
+            pass
         sende_nachricht(
             f"\U0001f5bc Neues Bild: {dateiname}\n"
             f"\U0001f50d Typ: {typ}{daten_text}\n\n"
@@ -467,6 +486,10 @@ def bestimme_dcp_name_komplett(bildpfad, ocr_text):
         else:
             return vorschlag
     else:
+        try:
+            sende_bild(bildpfad, caption=f"Neues Bild: {dateiname}")
+        except:
+            pass
         sende_nachricht(
             f"\U0001f5bc Neues Bild: {dateiname}\n"
             f"\u2753 Typ unbekannt{daten_text}\n\n"
@@ -487,7 +510,7 @@ def bestimme_dcp_name_komplett(bildpfad, ocr_text):
         elif antwort in ["3", "/3"]:
             return None
     return vorschlag
-'@ | Set-Content -Path "C:\dcp_automatisierung\modules\naming.py" -Encoding UTF8
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\naming.py", $_, $utf8NoBom) }
 
 # ── modules/dcpomatic.py ─────────────────────────────────────
 @'
@@ -539,7 +562,7 @@ def verschiebe_in_archiv(bildpfad):
     ziel = os.path.join(archiv, os.path.basename(bildpfad))
     shutil.move(bildpfad, ziel)
     return ziel
-'@ | Set-Content -Path "C:\dcp_automatisierung\modules\dcpomatic.py" -Encoding UTF8
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\dcpomatic.py", $_, $utf8NoBom) }
 
 # ── modules/doremi.py ────────────────────────────────────────
 @'
@@ -779,7 +802,7 @@ def lade_hoch_und_ingest(dcp_name, dcp_ordner_pfad):
     else:
         sende_nachricht(f"Ingest fehlgeschlagen!\nDCP: {dcp_name}\nBitte manuell pruefen!")
         return False
-'@ | Set-Content -Path "C:\dcp_automatisierung\modules\doremi.py" -Encoding UTF8
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\doremi.py", $_, $utf8NoBom) }
 
 # ── main.py ──────────────────────────────────────────────────
 @'
@@ -938,7 +961,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-'@ | Set-Content -Path "C:\dcp_automatisierung\main.py" -Encoding UTF8
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\main.py", $_, $utf8NoBom) }
 
 Write-Host "      Alle Scripts erstellt - OK" -ForegroundColor Gray
 
