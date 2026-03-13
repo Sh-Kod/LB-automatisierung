@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v1.0
+#   DCP AUTOMATISIERUNG - INSTALLER v2.0
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -10,7 +10,7 @@ chcp 65001 | Out-Null
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Cyan
-Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v1.0" -ForegroundColor Cyan
+Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.0" -ForegroundColor Cyan
 Write-Host "  ============================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -22,12 +22,11 @@ if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit 1
 }
 
-# UTF-8 ohne BOM Encoder
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
 # ─── EINGABEN ───────────────────────────────────────────────
 Write-Host "Auf welchem Laufwerk sollen die Ordner erstellt werden?" -ForegroundColor Yellow
-Write-Host "Beispiel: E fuer E:\ oder C fuer C:\" -ForegroundColor Gray
+Write-Host "Beispiel: E fuer E:\ oder D fuer D:\" -ForegroundColor Gray
 $LAUFWERK = Read-Host "Laufwerk eingeben (Standard E)"
 if ($LAUFWERK -eq "") { $LAUFWERK = "E" }
 $LAUFWERK = $LAUFWERK.Replace(":", "")
@@ -50,7 +49,7 @@ $OK = Read-Host "Installation starten? J/N"
 if ($OK -eq "N" -or $OK -eq "n") { exit 0 }
 Write-Host ""
 
-# Alte Installation bereinigen
+# ─── BEREINIGUNG ────────────────────────────────────────────
 Write-Host "Bereinige alte Installation..." -ForegroundColor Yellow
 $svcAlt = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
 if ($svcAlt) {
@@ -67,7 +66,7 @@ Write-Host "Bereinigung abgeschlossen!" -ForegroundColor Gray
 Write-Host ""
 
 # ─── SCHRITT 1: PYTHON ──────────────────────────────────────
-Write-Host "[1/7] Pruefe Python..." -ForegroundColor Green
+Write-Host "[1/8] Pruefe Python..." -ForegroundColor Green
 try {
     $v = python --version 2>&1
     Write-Host "      $v - OK" -ForegroundColor Gray
@@ -80,7 +79,7 @@ try {
 }
 
 # ─── SCHRITT 2: TESSERACT ───────────────────────────────────
-Write-Host "[2/7] Pruefe Tesseract OCR..." -ForegroundColor Green
+Write-Host "[2/8] Pruefe Tesseract OCR..." -ForegroundColor Green
 if (Test-Path "C:\Program Files\Tesseract-OCR\tesseract.exe") {
     Write-Host "      Tesseract bereits installiert - OK" -ForegroundColor Gray
 } else {
@@ -90,21 +89,24 @@ if (Test-Path "C:\Program Files\Tesseract-OCR\tesseract.exe") {
 }
 
 # ─── SCHRITT 3: DCP-O-MATIC ─────────────────────────────────
-Write-Host "[3/8] Pruefe DCP-o-matic..." -ForegroundColor Green
+Write-Host "[3/8] Pruefe DCP-o-matic 2..." -ForegroundColor Green
 if (Test-Path "C:\Program Files\DCP-o-matic 2\bin\dcpomatic2_cli.exe") {
     Write-Host "      DCP-o-matic bereits installiert - OK" -ForegroundColor Gray
 } else {
-    Write-Host "      DCP-o-matic wird heruntergeladen..." -ForegroundColor Yellow
-    $dcpUrl = "https://dcpomatic.com/dl.php?id=windows-2.16.78"
+    Write-Host "      DCP-o-matic wird heruntergeladen (ca. 200MB, bitte warten)..." -ForegroundColor Yellow
     $dcpInstaller = "$env:TEMP\dcpomatic_setup.exe"
-    curl.exe -L --retry 3 --retry-delay 2 -o "$dcpInstaller" "$dcpUrl"
-    Write-Host "      DCP-o-matic wird installiert (bitte warten)..." -ForegroundColor Yellow
+    curl.exe -L --retry 3 --retry-delay 5 -o "$dcpInstaller" "https://dcpomatic.com/dl.php?id=windows-2.16.78"
+    Write-Host "      DCP-o-matic wird installiert..." -ForegroundColor Yellow
     Start-Process -FilePath $dcpInstaller -ArgumentList "/S" -Wait
     Remove-Item $dcpInstaller -Force -ErrorAction SilentlyContinue
-    Write-Host "      DCP-o-matic installiert!" -ForegroundColor Gray
+    if (Test-Path "C:\Program Files\DCP-o-matic 2\bin\dcpomatic2_cli.exe") {
+        Write-Host "      DCP-o-matic installiert - OK" -ForegroundColor Gray
+    } else {
+        Write-Host "      [WARNUNG] DCP-o-matic Installation pruefen!" -ForegroundColor Red
+    }
 }
 
-# ─── SCHRITT 3: CHROME ──────────────────────────────────────
+# ─── SCHRITT 4: CHROME ──────────────────────────────────────
 Write-Host "[4/8] Pruefe Google Chrome..." -ForegroundColor Green
 if ((Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or
     (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")) {
@@ -115,7 +117,7 @@ if ((Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or
     Write-Host "      Chrome installiert!" -ForegroundColor Gray
 }
 
-# ─── SCHRITT 4: NSSM ────────────────────────────────────────
+# ─── SCHRITT 5: NSSM ────────────────────────────────────────
 Write-Host "[5/8] Pruefe NSSM..." -ForegroundColor Green
 if (Test-Path "C:\nssm\nssm.exe") {
     Write-Host "      NSSM bereits installiert - OK" -ForegroundColor Gray
@@ -131,7 +133,7 @@ if (Test-Path "C:\nssm\nssm.exe") {
     Write-Host "      NSSM installiert!" -ForegroundColor Gray
 }
 
-# ─── SCHRITT 5: ORDNER ──────────────────────────────────────
+# ─── SCHRITT 6: ORDNER ──────────────────────────────────────
 Write-Host "[6/8] Erstelle Ordner..." -ForegroundColor Green
 $ordner = @(
     "C:\dcp_automatisierung"
@@ -150,7 +152,7 @@ $ordner = @(
 foreach ($o in $ordner) { New-Item -ItemType Directory -Path $o -Force | Out-Null }
 Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
-# ─── SCHRITT 6: PYTHON DATEIEN ──────────────────────────────
+# ─── SCHRITT 7: PYTHON DATEIEN ──────────────────────────────
 Write-Host "[7/8] Erstelle Konfiguration und Scripts..." -ForegroundColor Green
 
 # config.yaml
@@ -165,6 +167,7 @@ ordner:
   dcp_archiv: "${LAUFWERK}:\\K.O.D Atomations\\DCP Upload erledigt"
 dcpomatic:
   cli_pfad: "C:\\Program Files\\DCP-o-matic 2\\bin\\dcpomatic2_cli.exe"
+  create_pfad: "C:\\Program Files\\DCP-o-matic 2\\bin\\dcpomatic2_create.exe"
 zeitplan:
   intervall_minuten: 60
 telegram:
@@ -173,8 +176,6 @@ telegram:
 logging:
   log_datei: "C:\\dcp_automatisierung\\logs\\dcp_system.log"
   log_level: "INFO"
-gemini:
-  api_key: "AIzaSyAcxSYME3T3hQNy7vK3wMdENQZuS4RXGzc"
 tesseract:
   pfad: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
 doremi:
@@ -191,14 +192,14 @@ doremi:
 # __init__.py
 "" | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\__init__.py", $_, $utf8NoBom) }
 
-# ── modules/logger.py ────────────────────────────────────────
+# ── modules/logger.py ──
 @'
 import logging
 import yaml
 from pathlib import Path
 
 def erstelle_logger():
-    with open("C:\\dcp_automatisierung\\config.yaml", "r") as f:
+    with open("C:\\dcp_automatisierung\\config.yaml", "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     log_datei = config["logging"]["log_datei"]
     log_level = config["logging"].get("log_level", "INFO")
@@ -216,7 +217,7 @@ def erstelle_logger():
 logger = erstelle_logger()
 '@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\logger.py", $_, $utf8NoBom) }
 
-# ── modules/watcher.py ───────────────────────────────────────
+# ── modules/watcher.py ──
 @'
 import os
 from pathlib import Path
@@ -233,14 +234,14 @@ def suche_neue_bilder(ordner):
     return bilder
 '@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\watcher.py", $_, $utf8NoBom) }
 
-# ── modules/analyzer.py ──────────────────────────────────────
+# ── modules/analyzer.py ──
 @'
 import yaml
 from PIL import Image
 import pytesseract
 
 def lade_config():
-    with open("C:\\dcp_automatisierung\\config.yaml", "r") as f:
+    with open("C:\\dcp_automatisierung\\config.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 def lese_text_aus_bild(bildpfad):
@@ -255,7 +256,7 @@ def lese_text_aus_bild(bildpfad):
         return ""
 '@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\analyzer.py", $_, $utf8NoBom) }
 
-# ── modules/telegram_bot.py ──────────────────────────────────
+# ── modules/telegram_bot.py ──
 @'
 import requests
 import yaml
@@ -263,7 +264,7 @@ import time
 import threading
 
 def lade_config():
-    with open("C:\\dcp_automatisierung\\config.yaml", "r") as f:
+    with open("C:\\dcp_automatisierung\\config.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 def sende_nachricht(text):
@@ -344,7 +345,7 @@ def starte_listener(callback):
             time.sleep(5)
 '@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\telegram_bot.py", $_, $utf8NoBom) }
 
-# ── modules/naming.py ────────────────────────────────────────
+# ── modules/naming.py ──
 @'
 import os
 import re
@@ -356,14 +357,9 @@ from modules.telegram_bot import sende_nachricht, sende_bild, warte_auf_antwort
 REGELN_PFAD = "C:\\dcp_automatisierung\\rules\\naming_rules.yaml"
 
 def bereinige_name(name):
-    ersetzungen = {
-        "ae": ["ae"], "oe": ["oe"], "ue": ["ue"],
-        "\u00e4": "ae", "\u00f6": "oe", "\u00fc": "ue",
-        "\u00c4": "Ae", "\u00d6": "Oe", "\u00dc": "Ue",
-        "\u00df": "ss", "+": "_", " ": "_", "-": "_"
-    }
     for alt, neu in [("\u00e4","ae"),("\u00f6","oe"),("\u00fc","ue"),("\u00c4","Ae"),
-                     ("\u00d6","Oe"),("\u00dc","Ue"),("\u00df","ss"),("+","_"),(" ","_"),("-","_")]:
+                     ("\u00d6","Oe"),("\u00dc","Ue"),("\u00df","ss"),("+","_"),("|","_"),
+                     (" ","_"),("-","_"),("/","_"),("\\","_")]:
         name = name.replace(alt, neu)
     name = re.sub(r"[^a-zA-Z0-9_]", "", name)
     name = re.sub(r"_+", "_", name)
@@ -414,7 +410,7 @@ def erkenne_typ(dateiname, ocr_text):
         return "traumkino"
     if "FILMKLASSIKER" in ou:
         return "filmklassiker"
-    if "ZUR" in ou and "CK IM KINO" in ou or "_zik_" in dl:
+    if ("ZUR" in ou and "CK IM KINO" in ou) or "_zik_" in dl:
         daten = extrahiere_daten(ocr_text)
         return "zik_uebersicht" if "_zik_" in dl or len(daten) > 3 else "zik_einzelfilm"
     if "_lb_" in dl:
@@ -543,7 +539,7 @@ def bestimme_dcp_name_komplett(bildpfad, ocr_text):
     return vorschlag
 '@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\naming.py", $_, $utf8NoBom) }
 
-# ── modules/dcpomatic.py ─────────────────────────────────────
+# ── modules/dcpomatic.py ──
 @'
 import os
 import subprocess
@@ -551,51 +547,95 @@ import shutil
 import yaml
 
 def lade_config():
-    with open("C:\\dcp_automatisierung\\config.yaml", "r") as f:
+    with open("C:\\dcp_automatisierung\\config.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+def suche_dcp_in_ordner(ordner):
+    """Sucht das erstellte DCP-Verzeichnis (enthaelt .mxf oder ASSETMAP)"""
+    if not os.path.exists(ordner):
+        return None
+    for item in os.listdir(ordner):
+        item_pfad = os.path.join(ordner, item)
+        if os.path.isdir(item_pfad):
+            inhalt = os.listdir(item_pfad)
+            if any(f.endswith(".mxf") or f == "ASSETMAP" or f == "ASSETMAP.xml" for f in inhalt):
+                return item_pfad
+    return None
 
 def erstelle_dcp(bildpfad, dcp_name, eingangsordner):
     from modules.telegram_bot import sende_nachricht
     config = lade_config()
     cli_pfad = config["dcpomatic"]["cli_pfad"]
-    create_exe = cli_pfad.replace("dcpomatic2_cli.exe", "dcpomatic2_create.exe")
+    create_pfad = config["dcpomatic"]["create_pfad"]
     dcp_ausgabe = config["ordner"]["dcp_ausgabe"]
     temp_ordner = "C:\\dcp_automatisierung\\temp"
+    laenge = 15 if "15sec" in eingangsordner else 10 if "10sec" in eingangsordner else 7
+    projekt_ordner = os.path.join(temp_ordner, dcp_name + "_projekt")
+
     os.makedirs(temp_ordner, exist_ok=True)
     os.makedirs(dcp_ausgabe, exist_ok=True)
-    laenge = 15 if "15sec" in eingangsordner else 10 if "10sec" in eingangsordner else 7
-    projekt_ordner = os.path.join(temp_ordner, dcp_name)
+
+    # Altes Projekt loeschen
+    if os.path.exists(projekt_ordner):
+        shutil.rmtree(projekt_ordner, ignore_errors=True)
     os.makedirs(projekt_ordner, exist_ok=True)
+
     try:
         sende_nachricht(f"Erstelle DCP:\n{dcp_name}\nLaenge: {laenge} Sekunden")
-        # Schritt 1: Projektdatei erstellen
+        print(f"DCP Create: {create_pfad}")
+        print(f"Bild: {bildpfad}")
+        print(f"Projekt: {projekt_ordner}")
+
+        # Schritt 1: DCP-o-matic Projekt erstellen
         r1 = subprocess.run([
-            create_exe,
+            create_pfad,
             "--name", dcp_name,
             "--still-length", str(laenge),
             "--dcp-content-type", "ADV",
             "--no-use-isdcf-name",
             "--output", projekt_ordner,
             bildpfad
-            ], capture_output=True, text=True, timeout=120)
-        print(f"CREATE stdout: {r1.stdout[:300]}")
-        print(f"CREATE stderr: {r1.stderr[:300]}")
-        # Schritt 2: DCP encodieren
+        ], capture_output=True, text=True, timeout=120)
+        print(f"CREATE returncode: {r1.returncode}")
+        print(f"CREATE stdout: {r1.stdout[:500]}")
+        print(f"CREATE stderr: {r1.stderr[:500]}")
+
+        if r1.returncode != 0 and r1.returncode != None:
+            sende_nachricht(f"DCP Projekt-Fehler!\n{dcp_name}\n{r1.stderr[:300]}")
+            return False
+
+        # Schritt 2: DCP rendern
+        print(f"Starte CLI: {cli_pfad} {projekt_ordner}")
         r2 = subprocess.run([cli_pfad, projekt_ordner],
             capture_output=True, text=True, timeout=1800)
-        print(f"CLI stdout: {r2.stdout[:300]}")
-        print(f"CLI stderr: {r2.stderr[:300]}")
-        if os.path.exists(os.path.join(dcp_ausgabe, dcp_name)):
+        print(f"CLI returncode: {r2.returncode}")
+        print(f"CLI stdout: {r2.stdout[:500]}")
+        print(f"CLI stderr: {r2.stderr[:500]}")
+
+        # Schritt 3: DCP-Ordner suchen (ist in projekt_ordner)
+        dcp_gefunden = suche_dcp_in_ordner(projekt_ordner)
+        print(f"DCP gefunden: {dcp_gefunden}")
+
+        if dcp_gefunden:
+            ziel = os.path.join(dcp_ausgabe, dcp_name)
+            if os.path.exists(ziel):
+                shutil.rmtree(ziel, ignore_errors=True)
+            shutil.move(dcp_gefunden, ziel)
+            print(f"DCP verschoben nach: {ziel}")
             sende_nachricht(f"DCP erstellt!\n{dcp_name}")
             return True
-        sende_nachricht(f"DCP Fehler!\n{dcp_name}")
-        return False
+        else:
+            fehler_msg = r2.stderr[:300] if r2.stderr else "Kein DCP-Ordner gefunden"
+            sende_nachricht(f"DCP Fehler!\n{dcp_name}\n{fehler_msg}")
+            return False
+
     except Exception as e:
-        print(f"DCP Fehler: {e}")
+        print(f"DCP Exception: {e}")
         sende_nachricht(f"DCP Fehler!\n{dcp_name}\n{str(e)[:200]}")
         return False
     finally:
-        shutil.rmtree(projekt_ordner, ignore_errors=True)
+        if os.path.exists(projekt_ordner):
+            shutil.rmtree(projekt_ordner, ignore_errors=True)
 
 def verschiebe_in_archiv(bildpfad):
     config = lade_config()
@@ -606,7 +646,7 @@ def verschiebe_in_archiv(bildpfad):
     return ziel
 '@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\dcpomatic.py", $_, $utf8NoBom) }
 
-# ── modules/doremi.py ────────────────────────────────────────
+# ── modules/doremi.py ──
 @'
 import os
 import time
@@ -624,7 +664,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 LOG_ORDNER = "C:\\dcp_automatisierung\\logs"
 
 def lade_config():
-    with open("C:\\dcp_automatisierung\\config.yaml", "r") as f:
+    with open("C:\\dcp_automatisierung\\config.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 def hole_cfg():
@@ -846,7 +886,7 @@ def lade_hoch_und_ingest(dcp_name, dcp_ordner_pfad):
         return False
 '@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\dcp_automatisierung\modules\doremi.py", $_, $utf8NoBom) }
 
-# ── main.py ──────────────────────────────────────────────────
+# ── main.py ──
 @'
 import os
 import time
@@ -865,7 +905,7 @@ LAEUFT = True
 VERARBEITUNG_AKTIV = False
 
 def lade_config():
-    with open("C:\\dcp_automatisierung\\config.yaml", "r") as f:
+    with open("C:\\dcp_automatisierung\\config.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 def hole_alle_eingangsordner():
@@ -951,7 +991,7 @@ def pruefe_alle_ordner():
 def telegram_befehl(text):
     text = text.strip()
     if text in ["1", "/check"]:
-        sende_nachricht("Starte Check...")
+        sende_nachricht("Starte sofortigen Check...")
         threading.Thread(target=pruefe_alle_ordner, daemon=True).start()
     elif text in ["2", "/status"]:
         config = lade_config()
@@ -960,7 +1000,7 @@ def telegram_befehl(text):
             n = len(suche_neue_bilder(o)) if os.path.exists(o) else "?"
             msg += f"{Path(o).name}: {n} Bilder\n"
         dcps = [d for d in os.listdir(config["ordner"]["dcp_ausgabe"]) if os.path.isdir(os.path.join(config["ordner"]["dcp_ausgabe"],d))] if os.path.exists(config["ordner"]["dcp_ausgabe"]) else []
-        msg += f"DCP-Ordner: {len(dcps)} DCP(s)\n\n1 /check\n2 /status\n3 /stop\n4 /restart\n5 /hilfe"
+        msg += f"DCP-Ordner: {len(dcps)} DCP(s)\n\n/check /status /stop /restart /hilfe"
         sende_nachricht(msg)
     elif text in ["3", "/stop"]:
         sende_nachricht("Wird beendet..."); time.sleep(1); os._exit(0)
@@ -1014,11 +1054,11 @@ foreach ($file in Get-ChildItem "C:\dcp_automatisierung" -Recurse -Include *.py,
     [System.IO.File]::WriteAllText($file.FullName, $txt, $utf8NoBomFix)
 }
 
-# ─── SCHRITT 7: VENV + PAKETE ───────────────────────────────
+# ─── SCHRITT 8: PYTHON PAKETE ───────────────────────────────
 Write-Host "[8/8] Installiere Python-Pakete (bitte warten)..." -ForegroundColor Green
 Set-Location "C:\dcp_automatisierung"
 $pythonExe = (Get-Command python).Source
-Write-Host "      Python gefunden: $pythonExe" -ForegroundColor Gray
+Write-Host "      Python: $pythonExe" -ForegroundColor Gray
 & "$pythonExe" -m pip install --upgrade pip -q
 & "$pythonExe" -m pip install requests pillow pytesseract pyyaml schedule selenium webdriver-manager watchdog -q
 Write-Host "      Alle Pakete installiert - OK" -ForegroundColor Gray
@@ -1027,7 +1067,6 @@ Write-Host "      Alle Pakete installiert - OK" -ForegroundColor Gray
 Write-Host "Richte Windows-Dienst ein..." -ForegroundColor Green
 $dienst = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
 if ($dienst) {
-    Write-Host "      Alter Dienst gefunden - wird entfernt..." -ForegroundColor Yellow
     & "C:\nssm\nssm.exe" stop dcp_automatisierung | Out-Null
     Start-Sleep -Seconds 2
     & "C:\nssm\nssm.exe" remove dcp_automatisierung confirm | Out-Null
@@ -1041,12 +1080,9 @@ if ($dienst) {
 & "C:\nssm\nssm.exe" set dcp_automatisierung AppStderr "C:\dcp_automatisierung\logs\service_error.log" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung AppRestartDelay 5000 | Out-Null
 & "C:\nssm\nssm.exe" start dcp_automatisierung | Out-Null
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 4
 $svc = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
-if ($svc -and $svc.Status -eq "Paused") {
-    $svc.Continue()
-    Start-Sleep -Seconds 2
-}
+$status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green
@@ -1055,7 +1091,8 @@ Write-Host "  ============================================================" -For
 Write-Host ""
 Write-Host "   Laufwerk  : ${LAUFWERK}:\" -ForegroundColor White
 Write-Host "   Doremi IP : $DOREMI_IP" -ForegroundColor White
-Write-Host "   Dienst    : Laeuft automatisch!" -ForegroundColor White
+Write-Host "   Python    : $pythonExe" -ForegroundColor White
+Write-Host "   Dienst    : $status" -ForegroundColor White
 Write-Host ""
 Write-Host "   Eingangsordner:" -ForegroundColor Yellow
 Write-Host "     ${LAUFWERK}:\K.O.D Atomations\Neue LB         (7 Sek)" -ForegroundColor Gray
