@@ -952,8 +952,11 @@ Write-Host "      Alle Pakete installiert - OK" -ForegroundColor Gray
 
 # ─── NSSM DIENST ────────────────────────────────────────────
 Write-Host "Richte Windows-Dienst ein..." -ForegroundColor Green
-& "C:\nssm\nssm.exe" stop dcp_automatisierung 2>$null | Out-Null
-& "C:\nssm\nssm.exe" remove dcp_automatisierung confirm 2>$null | Out-Null
+$ErrorActionPreference = "SilentlyContinue"
+cmd /c "C:\nssm\nssm.exe stop dcp_automatisierung" 2>nul
+cmd /c "C:\nssm\nssm.exe remove dcp_automatisierung confirm" 2>nul
+Start-Sleep -Seconds 2
+$ErrorActionPreference = "Continue"
 
 
 & "C:\nssm\nssm.exe" install dcp_automatisierung "C:\dcp_automatisierung\venv\Scripts\python.exe" "C:\dcp_automatisierung\main.py"
