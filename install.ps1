@@ -991,20 +991,8 @@ foreach ($file in Get-ChildItem "C:\dcp_automatisierung" -Recurse -Include *.py,
 # ─── SCHRITT 7: VENV + PAKETE ───────────────────────────────
 Write-Host "[7/7] Installiere Python-Pakete (bitte warten)..." -ForegroundColor Green
 Set-Location "C:\dcp_automatisierung"
-# Erst Dienst stoppen damit venv nicht gesperrt ist
-$svcCheck = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
-if ($svcCheck) {
-    & "C:\nssm\nssm.exe" stop dcp_automatisierung | Out-Null
-    Start-Sleep -Seconds 3
-}
-if (Test-Path "C:\dcp_automatisierung\venv") {
-    Remove-Item -Path "C:\dcp_automatisierung\venv" -Recurse -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-}
-python -m venv venv
-Start-Sleep -Seconds 2
-& "C:\dcp_automatisierung\venv\Scripts\python.exe" -m pip install --upgrade pip -q
-& "C:\dcp_automatisierung\venv\Scripts\python.exe" -m pip install requests pillow pytesseract pyyaml schedule selenium webdriver-manager watchdog -q
+python -m pip install --upgrade pip -q
+python -m pip install requests pillow pytesseract pyyaml schedule selenium webdriver-manager watchdog -q
 Write-Host "      Alle Pakete installiert - OK" -ForegroundColor Gray
 
 # ─── NSSM DIENST ────────────────────────────────────────────
@@ -1017,7 +1005,7 @@ if ($dienst) {
     & "C:\nssm\nssm.exe" remove dcp_automatisierung confirm | Out-Null
     Start-Sleep -Seconds 2
 }
-& "C:\nssm\nssm.exe" install dcp_automatisierung "C:\dcp_automatisierung\venv\Scripts\python.exe" "C:\dcp_automatisierung\main.py" | Out-Null
+& "C:\nssm\nssm.exe" install dcp_automatisierung "C:\Windows\py.exe" "-3.11" "C:\dcp_automatisierung\main.py" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung AppDirectory "C:\dcp_automatisierung" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung DisplayName "DCP-Automatisierung" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung Start SERVICE_AUTO_START | Out-Null
