@@ -975,6 +975,12 @@ foreach ($file in Get-ChildItem "C:\dcp_automatisierung" -Recurse -Include *.py,
 # ─── SCHRITT 7: VENV + PAKETE ───────────────────────────────
 Write-Host "[7/7] Installiere Python-Pakete (bitte warten)..." -ForegroundColor Green
 Set-Location "C:\dcp_automatisierung"
+# Erst Dienst stoppen damit venv nicht gesperrt ist
+$svcCheck = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
+if ($svcCheck) {
+    & "C:\nssm\nssm.exe" stop dcp_automatisierung | Out-Null
+    Start-Sleep -Seconds 3
+}
 if (Test-Path "C:\dcp_automatisierung\venv") {
     Remove-Item -Path "C:\dcp_automatisierung\venv" -Recurse -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
