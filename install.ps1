@@ -955,9 +955,9 @@ Write-Host "Richte Windows-Dienst ein..." -ForegroundColor Green
 $dienst = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
 if ($dienst) {
     Write-Host "      Alter Dienst gefunden - wird entfernt..." -ForegroundColor Yellow
-    cmd /c "C:\nssm\nssm.exe stop dcp_automatisierung" >nul 2>&1
+    & "C:\nssm\nssm.exe" stop dcp_automatisierung | Out-Null
     Start-Sleep -Seconds 2
-    cmd /c "C:\nssm\nssm.exe remove dcp_automatisierung confirm" >nul 2>&1
+    & "C:\nssm\nssm.exe" remove dcp_automatisierung confirm | Out-Null
     Start-Sleep -Seconds 2
 }
 & "C:\nssm\nssm.exe" install dcp_automatisierung "C:\dcp_automatisierung\venv\Scripts\python.exe" "C:\dcp_automatisierung\main.py" | Out-Null
