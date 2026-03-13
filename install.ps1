@@ -568,12 +568,23 @@ def erstelle_dcp(bildpfad, dcp_name, eingangsordner):
     os.makedirs(projekt_ordner, exist_ok=True)
     try:
         sende_nachricht(f"Erstelle DCP:\n{dcp_name}\nLaenge: {laenge} Sekunden")
-        subprocess.run([create_exe, "--name", dcp_name, "--content", bildpfad,
-            "--still-length", str(laenge), "--dcp-content-type", "ADV",
-            "--output", dcp_ausgabe, projekt_ordner],
-            capture_output=True, text=True, timeout=120)
-        subprocess.run([cli_pfad, projekt_ordner],
+        # Schritt 1: Projektdatei erstellen
+        r1 = subprocess.run([
+            create_exe,
+            "--name", dcp_name,
+            "--still-length", str(laenge),
+            "--dcp-content-type", "ADV",
+            "--no-use-isdcf-name",
+            "--output", projekt_ordner,
+            bildpfad
+            ], capture_output=True, text=True, timeout=120)
+        print(f"CREATE stdout: {r1.stdout[:300]}")
+        print(f"CREATE stderr: {r1.stderr[:300]}")
+        # Schritt 2: DCP encodieren
+        r2 = subprocess.run([cli_pfad, projekt_ordner],
             capture_output=True, text=True, timeout=1800)
+        print(f"CLI stdout: {r2.stdout[:300]}")
+        print(f"CLI stderr: {r2.stderr[:300]}")
         if os.path.exists(os.path.join(dcp_ausgabe, dcp_name)):
             sende_nachricht(f"DCP erstellt!\n{dcp_name}")
             return True
