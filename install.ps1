@@ -1005,7 +1005,8 @@ if ($dienst) {
     & "C:\nssm\nssm.exe" remove dcp_automatisierung confirm | Out-Null
     Start-Sleep -Seconds 2
 }
-& "C:\nssm\nssm.exe" install dcp_automatisierung "C:\Windows\py.exe" "-3.11" "C:\dcp_automatisierung\main.py" | Out-Null
+$pythonPath = (Get-Command python).Source
+& "C:\nssm\nssm.exe" install dcp_automatisierung "$pythonPath" "C:\dcp_automatisierung\main.py" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung AppDirectory "C:\dcp_automatisierung" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung DisplayName "DCP-Automatisierung" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung Start SERVICE_AUTO_START | Out-Null
