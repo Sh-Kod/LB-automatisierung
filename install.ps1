@@ -952,22 +952,22 @@ Write-Host "      Alle Pakete installiert - OK" -ForegroundColor Gray
 
 # ─── NSSM DIENST ────────────────────────────────────────────
 Write-Host "Richte Windows-Dienst ein..." -ForegroundColor Green
-$ErrorActionPreference = "SilentlyContinue"
-cmd /c "C:\nssm\nssm.exe stop dcp_automatisierung" 2>nul
-cmd /c "C:\nssm\nssm.exe remove dcp_automatisierung confirm" 2>nul
-Start-Sleep -Seconds 2
-$ErrorActionPreference = "Continue"
-
-
-& "C:\nssm\nssm.exe" install dcp_automatisierung "C:\dcp_automatisierung\venv\Scripts\python.exe" "C:\dcp_automatisierung\main.py"
-& "C:\nssm\nssm.exe" set dcp_automatisierung AppDirectory "C:\dcp_automatisierung"
-& "C:\nssm\nssm.exe" set dcp_automatisierung DisplayName "DCP Automatisierung"
-& "C:\nssm\nssm.exe" set dcp_automatisierung Description "Automatische DCP Erstellung und Ingest"
-& "C:\nssm\nssm.exe" set dcp_automatisierung Start SERVICE_AUTO_START
-& "C:\nssm\nssm.exe" set dcp_automatisierung AppStdout "C:\dcp_automatisierung\logs\service.log"
-& "C:\nssm\nssm.exe" set dcp_automatisierung AppStderr "C:\dcp_automatisierung\logs\service_error.log"
-& "C:\nssm\nssm.exe" set dcp_automatisierung AppRestartDelay 5000
-& "C:\nssm\nssm.exe" start dcp_automatisierung
+$dienst = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
+if ($dienst) {
+    Write-Host "      Alter Dienst gefunden - wird entfernt..." -ForegroundColor Yellow
+    cmd /c "C:\nssm\nssm.exe stop dcp_automatisierung" >nul 2>&1
+    Start-Sleep -Seconds 2
+    cmd /c "C:\nssm\nssm.exe remove dcp_automatisierung confirm" >nul 2>&1
+    Start-Sleep -Seconds 2
+}
+cmd /c "C:\nssm\nssm.exe install dcp_automatisierung C:\dcp_automatisierung\venv\Scripts\python.exe C:\dcp_automatisierung\main.py" >nul 2>&1
+cmd /c "C:\nssm\nssm.exe set dcp_automatisierung AppDirectory C:\dcp_automatisierung" >nul 2>&1
+cmd /c "C:\nssm\nssm.exe set dcp_automatisierung DisplayName DCP-Automatisierung" >nul 2>&1
+cmd /c "C:\nssm\nssm.exe set dcp_automatisierung Start SERVICE_AUTO_START" >nul 2>&1
+cmd /c "C:\nssm\nssm.exe set dcp_automatisierung AppStdout C:\dcp_automatisierung\logs\service.log" >nul 2>&1
+cmd /c "C:\nssm\nssm.exe set dcp_automatisierung AppStderr C:\dcp_automatisierung\logs\service_error.log" >nul 2>&1
+cmd /c "C:\nssm\nssm.exe set dcp_automatisierung AppRestartDelay 5000" >nul 2>&1
+cmd /c "C:\nssm\nssm.exe start dcp_automatisierung" >nul 2>&1
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green
