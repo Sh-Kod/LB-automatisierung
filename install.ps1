@@ -89,8 +89,23 @@ if (Test-Path "C:\Program Files\Tesseract-OCR\tesseract.exe") {
     Write-Host "      Tesseract installiert!" -ForegroundColor Gray
 }
 
+# ─── SCHRITT 3: DCP-O-MATIC ─────────────────────────────────
+Write-Host "[3/8] Pruefe DCP-o-matic..." -ForegroundColor Green
+if (Test-Path "C:\Program Files\DCP-o-matic 2\bin\dcpomatic2_cli.exe") {
+    Write-Host "      DCP-o-matic bereits installiert - OK" -ForegroundColor Gray
+} else {
+    Write-Host "      DCP-o-matic wird heruntergeladen..." -ForegroundColor Yellow
+    $dcpUrl = "https://dcpomatic.com/dl.php?id=windows-2.16.78"
+    $dcpInstaller = "$env:TEMP\dcpomatic_setup.exe"
+    curl.exe -L --retry 3 --retry-delay 2 -o "$dcpInstaller" "$dcpUrl"
+    Write-Host "      DCP-o-matic wird installiert (bitte warten)..." -ForegroundColor Yellow
+    Start-Process -FilePath $dcpInstaller -ArgumentList "/S" -Wait
+    Remove-Item $dcpInstaller -Force -ErrorAction SilentlyContinue
+    Write-Host "      DCP-o-matic installiert!" -ForegroundColor Gray
+}
+
 # ─── SCHRITT 3: CHROME ──────────────────────────────────────
-Write-Host "[3/7] Pruefe Google Chrome..." -ForegroundColor Green
+Write-Host "[4/8] Pruefe Google Chrome..." -ForegroundColor Green
 if ((Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or
     (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")) {
     Write-Host "      Chrome bereits installiert - OK" -ForegroundColor Gray
@@ -101,7 +116,7 @@ if ((Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or
 }
 
 # ─── SCHRITT 4: NSSM ────────────────────────────────────────
-Write-Host "[4/7] Pruefe NSSM..." -ForegroundColor Green
+Write-Host "[5/8] Pruefe NSSM..." -ForegroundColor Green
 if (Test-Path "C:\nssm\nssm.exe") {
     Write-Host "      NSSM bereits installiert - OK" -ForegroundColor Gray
 } else {
@@ -117,7 +132,7 @@ if (Test-Path "C:\nssm\nssm.exe") {
 }
 
 # ─── SCHRITT 5: ORDNER ──────────────────────────────────────
-Write-Host "[5/7] Erstelle Ordner..." -ForegroundColor Green
+Write-Host "[6/8] Erstelle Ordner..." -ForegroundColor Green
 $ordner = @(
     "C:\dcp_automatisierung"
     "C:\dcp_automatisierung\modules"
@@ -136,7 +151,7 @@ foreach ($o in $ordner) { New-Item -ItemType Directory -Path $o -Force | Out-Nul
 Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
 # ─── SCHRITT 6: PYTHON DATEIEN ──────────────────────────────
-Write-Host "[6/7] Erstelle Konfiguration und Scripts..." -ForegroundColor Green
+Write-Host "[7/8] Erstelle Konfiguration und Scripts..." -ForegroundColor Green
 
 # config.yaml
 @"
@@ -989,10 +1004,12 @@ foreach ($file in Get-ChildItem "C:\dcp_automatisierung" -Recurse -Include *.py,
 }
 
 # ─── SCHRITT 7: VENV + PAKETE ───────────────────────────────
-Write-Host "[7/7] Installiere Python-Pakete (bitte warten)..." -ForegroundColor Green
+Write-Host "[8/8] Installiere Python-Pakete (bitte warten)..." -ForegroundColor Green
 Set-Location "C:\dcp_automatisierung"
-python -m pip install --upgrade pip -q
-python -m pip install requests pillow pytesseract pyyaml schedule selenium webdriver-manager watchdog -q
+$pythonExe = (Get-Command python).Source
+Write-Host "      Python gefunden: $pythonExe" -ForegroundColor Gray
+& "$pythonExe" -m pip install --upgrade pip -q
+& "$pythonExe" -m pip install requests pillow pytesseract pyyaml schedule selenium webdriver-manager watchdog -q
 Write-Host "      Alle Pakete installiert - OK" -ForegroundColor Gray
 
 # ─── NSSM DIENST ────────────────────────────────────────────
@@ -1005,8 +1022,7 @@ if ($dienst) {
     & "C:\nssm\nssm.exe" remove dcp_automatisierung confirm | Out-Null
     Start-Sleep -Seconds 2
 }
-$pythonPath = (Get-Command python).Source
-& "C:\nssm\nssm.exe" install dcp_automatisierung "$pythonPath" "C:\dcp_automatisierung\main.py" | Out-Null
+& "C:\nssm\nssm.exe" install dcp_automatisierung "$pythonExe" "C:\dcp_automatisierung\main.py" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung AppDirectory "C:\dcp_automatisierung" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung DisplayName "DCP-Automatisierung" | Out-Null
 & "C:\nssm\nssm.exe" set dcp_automatisierung Start SERVICE_AUTO_START | Out-Null
