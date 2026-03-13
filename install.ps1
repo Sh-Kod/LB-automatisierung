@@ -960,14 +960,14 @@ if ($dienst) {
     cmd /c "C:\nssm\nssm.exe remove dcp_automatisierung confirm" >nul 2>&1
     Start-Sleep -Seconds 2
 }
-cmd /c "C:\nssm\nssm.exe install dcp_automatisierung C:\dcp_automatisierung\venv\Scripts\python.exe C:\dcp_automatisierung\main.py" >nul 2>&1
-cmd /c "C:\nssm\nssm.exe set dcp_automatisierung AppDirectory C:\dcp_automatisierung" >nul 2>&1
-cmd /c "C:\nssm\nssm.exe set dcp_automatisierung DisplayName DCP-Automatisierung" >nul 2>&1
-cmd /c "C:\nssm\nssm.exe set dcp_automatisierung Start SERVICE_AUTO_START" >nul 2>&1
-cmd /c "C:\nssm\nssm.exe set dcp_automatisierung AppStdout C:\dcp_automatisierung\logs\service.log" >nul 2>&1
-cmd /c "C:\nssm\nssm.exe set dcp_automatisierung AppStderr C:\dcp_automatisierung\logs\service_error.log" >nul 2>&1
-cmd /c "C:\nssm\nssm.exe set dcp_automatisierung AppRestartDelay 5000" >nul 2>&1
-cmd /c "C:\nssm\nssm.exe start dcp_automatisierung" >nul 2>&1
+& "C:\nssm\nssm.exe" install dcp_automatisierung "C:\dcp_automatisierung\venv\Scripts\python.exe" "C:\dcp_automatisierung\main.py" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung AppDirectory "C:\dcp_automatisierung" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung DisplayName "DCP-Automatisierung" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung Start SERVICE_AUTO_START | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung AppStdout "C:\dcp_automatisierung\logs\service.log" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung AppStderr "C:\dcp_automatisierung\logs\service_error.log" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung AppRestartDelay 5000 | Out-Null
+& "C:\nssm\nssm.exe" start dcp_automatisierung | Out-Null
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green
