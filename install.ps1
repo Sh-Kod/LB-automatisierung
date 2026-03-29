@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v2.1
+#   DCP AUTOMATISIERUNG - INSTALLER v2.2
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -18,7 +18,7 @@ $IS_UPDATE = ($LAUFWERK_PARAM -ne "")
 if (-not $IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.1" -ForegroundColor Cyan
+    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.2" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -167,7 +167,7 @@ Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
 Write-Host "[7/8] Erstelle Scripts und Konfiguration..." -ForegroundColor Green
 
-"2.1" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
+"2.2" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
 
 if ($IS_UPDATE -and $configBackup -ne "") {
     [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\config.yaml", $configBackup, $utf8NoBom)
@@ -408,6 +408,120 @@ def starte_listener(callback):
             time.sleep(5)
 '@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\modules\\telegram_bot.py", $_, $utf8NoBom) }
 
+@'
+import subprocess
+import sys
+import time
+import threading
+import yaml
+import schedule
+import urllib.request
+
+from modules import telegram_bot, watcher, analyzer
+
+CONFIG_PFAD = "C:\\dcp_automatisierung\\config.yaml"
+VERSION_PFAD = "C:\\dcp_automatisierung\\version.txt"
+
+def lade_config():
+    with open(CONFIG_PFAD, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+def lese_version():
+    try:
+        return open(VERSION_PFAD, encoding="utf-8").read().strip()
+    except Exception:
+        return "unbekannt"
+
+def verarbeite_ordner(ordner, dauer_sek):
+    config = lade_config()
+    bilder = watcher.suche_neue_bilder(ordner)
+    if not bilder:
+        return
+    for bildpfad in bilder:
+        try:
+            telegram_bot.sende_nachricht(f"Neues Bild erkannt: {bildpfad}")
+            text = analyzer.lese_text_aus_bild(bildpfad)
+            telegram_bot.sende_nachricht(f"OCR-Ergebnis ({dauer_sek}s):\n{text[:500]}")
+        except Exception as e:
+            telegram_bot.sende_nachricht(f"Fehler bei {bildpfad}: {e}")
+
+def starte_verarbeitung():
+    config = lade_config()
+    ordner_config = config.get("ordner", {})
+    verarbeite_ordner(ordner_config.get("eingang_7sec", ""), 7)
+    verarbeite_ordner(ordner_config.get("eingang_10sec", ""), 10)
+    verarbeite_ordner(ordner_config.get("eingang_15sec", ""), 15)
+
+def pruefe_update():
+    try:
+        config = lade_config()
+        url = config.get("update", {}).get("github_version_url", "")
+        if not url:
+            telegram_bot.sende_nachricht("Keine Update-URL in config.yaml konfiguriert.")
+            return
+        github_version = urllib.request.urlopen(url, timeout=10).read().decode().strip()
+        local_version = lese_version()
+        if github_version != local_version:
+            telegram_bot.sende_nachricht(
+                f"Update verfuegbar!\nInstalliert: v{local_version}\nNeu: v{github_version}\nStarte Update..."
+            )
+            update_url = config.get("update", {}).get("github_update_url", "")
+            import tempfile, os
+            tmp = os.path.join(tempfile.gettempdir(), "dcp_update.ps1")
+            urllib.request.urlretrieve(update_url, tmp)
+            subprocess.Popen(
+                ["powershell", "-ExecutionPolicy", "Bypass", "-File", tmp],
+                creationflags=subprocess.CREATE_NEW_CONSOLE
+            )
+        else:
+            telegram_bot.sende_nachricht(f"Bereits aktuell: v{local_version}")
+    except Exception as e:
+        telegram_bot.sende_nachricht(f"Update-Pruefung fehlgeschlagen: {e}")
+
+def bearbeite_befehl(text):
+    cmd = text.strip().lower()
+    if cmd == "/version":
+        v = lese_version()
+        telegram_bot.sende_nachricht(f"DCP-Automatisierung Version: v{v}")
+    elif cmd == "/update":
+        telegram_bot.sende_nachricht("Suche nach Updates...")
+        threading.Thread(target=pruefe_update, daemon=True).start()
+    elif cmd == "/status":
+        telegram_bot.sende_nachricht("System laeuft. /version fuer Version, /update fuer Update-Pruefung.")
+    elif cmd == "/check":
+        telegram_bot.sende_nachricht("Starte manuelle Pruefung...")
+        threading.Thread(target=starte_verarbeitung, daemon=True).start()
+    elif cmd in ("/stop", "/restart"):
+        telegram_bot.sende_nachricht(f"Befehl '{cmd}' empfangen - bitte Dienst manuell steuern.")
+    elif cmd == "/hilfe":
+        telegram_bot.sende_nachricht(
+            "Verfuegbare Befehle:\n"
+            "/version - Zeigt aktuelle Version\n"
+            "/update  - Sucht und installiert Updates\n"
+            "/check   - Manuelle Ordner-Pruefung\n"
+            "/status  - Systemstatus\n"
+            "/hilfe   - Diese Hilfe"
+        )
+    else:
+        telegram_bot.sende_nachricht(f"Unbekannter Befehl: {text}\nTippe /hilfe fuer alle Befehle.")
+
+if __name__ == "__main__":
+    config = lade_config()
+    intervall = config.get("zeitplan", {}).get("intervall_minuten", 60)
+    telegram_bot.sende_nachricht(f"DCP-Automatisierung v{lese_version()} gestartet.")
+    listener_thread = threading.Thread(
+        target=telegram_bot.starte_listener,
+        args=(bearbeite_befehl,),
+        daemon=True
+    )
+    listener_thread.start()
+    schedule.every(intervall).minutes.do(starte_verarbeitung)
+    starte_verarbeitung()
+    while True:
+        schedule.run_pending()
+        time.sleep(10)
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\main.py", $_, $utf8NoBom) }
+
 Write-Host "      Python-Module erstellt - OK" -ForegroundColor Gray
 
 $utf8NoBomFix = New-Object System.Text.UTF8Encoding $false
@@ -446,13 +560,13 @@ $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 if ($IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.1" -ForegroundColor Green
+    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.2" -ForegroundColor Green
     Write-Host "   Dienst: $status" -ForegroundColor White
     Write-Host "  ============================================================" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.1" -ForegroundColor Green
+    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.2" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Laufwerk  : ${LAUFWERK}:\\" -ForegroundColor White
@@ -461,7 +575,7 @@ if ($IS_UPDATE) {
     Write-Host "   Dienst    : $status" -ForegroundColor White
     Write-Host ""
     Write-Host "   Telegram-Befehle:" -ForegroundColor Yellow
-    Write-Host "     /check /status /queue /stop /restart /hilfe" -ForegroundColor Gray
+    Write-Host "     /version /update /check /status /stop /restart /hilfe" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
