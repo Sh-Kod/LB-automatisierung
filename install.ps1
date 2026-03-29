@@ -545,14 +545,14 @@ if ($dienst) {
     & "C:\\nssm\\nssm.exe" remove dcp_automatisierung confirm | Out-Null
     Start-Sleep -Seconds 2
 }
-& "C:\\nssm\\nssm.exe" install dcp_automatisierung "$pythonExe" "C:\\dcp_automatisierung\\main.py" | Out-Null
-& "C:\\nssm\\nssm.exe" set dcp_automatisierung AppDirectory "C:\\dcp_automatisierung" | Out-Null
-& "C:\\nssm\\nssm.exe" set dcp_automatisierung DisplayName "DCP-Automatisierung" | Out-Null
-& "C:\\nssm\\nssm.exe" set dcp_automatisierung Start SERVICE_AUTO_START | Out-Null
-& "C:\\nssm\\nssm.exe" set dcp_automatisierung AppStdout "C:\\dcp_automatisierung\\logs\\service.log" | Out-Null
-& "C:\\nssm\\nssm.exe" set dcp_automatisierung AppStderr "C:\\dcp_automatisierung\\logs\\service_error.log" | Out-Null
-& "C:\\nssm\\nssm.exe" set dcp_automatisierung AppRestartDelay 5000 | Out-Null
-& "C:\\nssm\\nssm.exe" start dcp_automatisierung | Out-Null
+& "C:\nssm\nssm.exe" install dcp_automatisierung "$pythonExe" "C:\dcp_automatisierung\main.py" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung AppDirectory "C:\dcp_automatisierung" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung DisplayName "DCP-Automatisierung" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung Start SERVICE_AUTO_START | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung AppStdout "C:\dcp_automatisierung\logs\service.log" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung AppStderr "C:\dcp_automatisierung\logs\service_error.log" | Out-Null
+& "C:\nssm\nssm.exe" set dcp_automatisierung AppRestartDelay 5000 | Out-Null
+& "C:\nssm\nssm.exe" start dcp_automatisierung | Out-Null
 Start-Sleep -Seconds 4
 $svc = Get-Service -Name "dcp_automatisierung" -ErrorAction SilentlyContinue
 $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
