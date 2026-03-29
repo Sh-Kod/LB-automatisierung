@@ -44,7 +44,7 @@ for ($v = 1; $v -le 3; $v++) {
 if (-not $erfolgreich) { Write-Host "Download fehlgeschlagen!" -ForegroundColor Red; exit 1 }
 
 Write-Host "Starte Installation..." -ForegroundColor Green
-Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `\"$installPfad`\" -LAUFWERK_PARAM $LAUFWERK -DOREMI_IP_PARAM $DOREMI_IP" -Wait
+Start-Process powershell -ArgumentList @("-ExecutionPolicy", "Bypass", "-File", $installPfad, "-LAUFWERK_PARAM", $LAUFWERK, "-DOREMI_IP_PARAM", $DOREMI_IP) -Wait
 
 if ($rulesBackup -ne "" -and (Test-Path $rulesPfad)) {
     $aktuell = Get-Content $rulesPfad -Raw
