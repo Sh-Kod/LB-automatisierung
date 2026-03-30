@@ -1,9 +1,9 @@
 import json
 import os
 import py_compile
+import re
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
 import urllib.request
@@ -14,12 +14,16 @@ import yaml
 
 from modules import analyzer, job_manager, queue_manager, telegram_bot, watcher
 
-CONFIG_PFAD = "C:\\dcp_automatisierung\\config.yaml"
-VERSION_PFAD = "C:\\dcp_automatisierung\\version.txt"
-STAGING_PFAD = "C:\\dcp_automatisierung\\staging"
+CONFIG_PFAD       = "C:\\dcp_automatisierung\\config.yaml"
+VERSION_PFAD      = "C:\\dcp_automatisierung\\version.txt"
+RULES_PFAD        = "C:\\dcp_automatisierung\\rules\\naming_rules.yaml"
+STAGING_PFAD      = "C:\\dcp_automatisierung\\staging"
 PENDING_UPDATE_PFAD = "C:\\dcp_automatisierung\\pending_update.json"
-UPDATE_RESULT_PFAD = "C:\\dcp_automatisierung\\update_result.json"
-UPDATER_PFAD = "C:\\dcp_automatisierung\\updater.py"
+UPDATE_RESULT_PFAD  = "C:\\dcp_automatisierung\\update_result.json"
+UPDATER_PFAD      = "C:\\dcp_automatisierung\\updater.py"
+
+_scan_pausiert      = False
+_scan_pausiert_lock = threading.Lock()
 
 # ──────────────────────────────────────────────
 # Hilfsfunktionen
@@ -41,6 +45,28 @@ def lese_version():
     except Exception:
         return "unbekannt"
 
+def _trenn():
+    return "─" * 30
+
+# ──────────────────────────────────────────────
+# Naming-Vorschlag aus Rules
+# ──────────────────────────────────────────────
+
+def schlage_namen_vor(ocr_text):
+    """Versucht aus OCR-Text und naming_rules.yaml einen DCP-Namen vorzuschlagen."""
+    try:
+        with open(RULES_PFAD, "r", encoding="utf-8") as f:
+            rules_data = yaml.safe_load(f)
+        regeln = (rules_data or {}).get("regeln", [])
+        for regel in regeln:
+            muster  = regel.get("muster", "")
+            vorlage = regel.get("vorlage", "")
+            if muster and vorlage and re.search(muster, ocr_text, re.IGNORECASE):
+                return vorlage.replace("{JAHR}", str(datetime.now().year))
+    except Exception:
+        pass
+    return None
+
 # ──────────────────────────────────────────────
 # Ordner-Scan → Queue
 # ──────────────────────────────────────────────
@@ -54,10 +80,11 @@ def _scan_ordner(ordner, dauer_sek):
     return neu
 
 def starte_verarbeitung():
-    """Scannt Eingangsordner und legt neue Bilder in die Benennungs-Queue."""
+    with _scan_pausiert_lock:
+        if _scan_pausiert:
+            return
     cfg = lade_config().get("ordner", {})
-    gesamt = 0
-    gesamt += _scan_ordner(cfg.get("eingang_7sec", ""), 7)
+    gesamt  = _scan_ordner(cfg.get("eingang_7sec",  ""), 7)
     gesamt += _scan_ordner(cfg.get("eingang_10sec", ""), 10)
     gesamt += _scan_ordner(cfg.get("eingang_15sec", ""), 15)
     if gesamt > 0:
@@ -67,10 +94,11 @@ def starte_verarbeitung():
 # Queue-Worker: sequentieller Benennungs-Dialog
 # ──────────────────────────────────────────────
 
+def _dialog_zeitüberschreitung(item_id):
+    queue_manager.zuruecksetzen(item_id)
+    telegram_bot.sende_nachricht("Timeout – Bild zurück in Queue.")
+
 def queue_worker():
-    """Laeuft dauerhaft in eigenem Thread.
-    Verarbeitet Queue-Items SEQUENTIELL (genau 1 Dialog gleichzeitig).
-    Hintergrund-Jobs laufen parallel."""
     time.sleep(5)
     while True:
         item = queue_manager.naechstes_pending()
@@ -84,64 +112,111 @@ def queue_worker():
             continue
 
         try:
-            bildpfad = item["bildpfad"]
-            dauer_sek = item["dauer_sek"]
+            bildpfad    = item["bildpfad"]
+            dauer_sek   = item["dauer_sek"]
             pending_rest = queue_manager.pending_anzahl()
 
-            caption = f"Neues Bild ({dauer_sek}s Werbung)"
+            # Bild senden
+            caption = f"Neues Bild ({dauer_sek}s)"
             if pending_rest > 0:
-                caption += f"  |  Noch {pending_rest} in Queue"
+                caption += f"  |  Queue: {pending_rest} wartend"
             try:
                 telegram_bot.sende_bild(bildpfad, caption=caption)
             except Exception:
                 telegram_bot.sende_nachricht(f"Bild: {os.path.basename(bildpfad)}")
 
+            # OCR
             ocr_text = ""
             try:
                 ocr_text = analyzer.lese_text_aus_bild(bildpfad)
             except Exception:
                 pass
 
-            prompt = (
-                f"Erkannter Text:\n{ocr_text[:400]}\n\n"
-                f"Bitte DCP-Namen eingeben.\n"
-                f"(oder /skip zum Ueberspringen, Timeout: 60 Min)"
-            )
-            telegram_bot.sende_nachricht(prompt)
+            # Vorschlag aus Naming-Rules
+            vorschlag = schlage_namen_vor(ocr_text)
 
+            # Dialog aufbauen
+            t = _trenn()
+            msg = f"{t}\n"
+            if ocr_text:
+                msg += f"OCR-Text:\n{ocr_text[:300].strip()}\n\n"
+            if vorschlag:
+                msg += f"Vorschlag:\n{vorschlag}\n\n"
+                msg += "[1]  Vorschlag übernehmen\n"
+                msg += "[2]  Eigenen Namen eingeben\n"
+                msg += "[3]  Überspringen\n"
+            else:
+                msg += "Kein Vorschlag (keine Regel gefunden)\n\n"
+                msg += "[1]  Namen eingeben\n"
+                msg += "[2]  Überspringen\n"
+            msg += f"{t}\n(Timeout: 60 Min)"
+            telegram_bot.sende_nachricht(msg)
+
+            # Schritt 1: Auswahl abwarten
             antwort = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
+            if antwort is None:
+                _dialog_zeitüberschreitung(item["id"])
+                continue
 
-            if antwort is None or antwort.strip().lower() == "/skip":
+            a = antwort.strip()
+            final_name = None
+            skip = False
+
+            if vorschlag:
+                if a == "1":
+                    final_name = vorschlag
+                elif a == "2":
+                    telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
+                    a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
+                    if a2 is None:
+                        _dialog_zeitüberschreitung(item["id"])
+                        continue
+                    final_name = a2.strip()
+                elif a in ("3", "/skip"):
+                    skip = True
+                else:
+                    # Direkte Namenseingabe akzeptieren
+                    final_name = a
+            else:
+                if a == "1":
+                    telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
+                    a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
+                    if a2 is None:
+                        _dialog_zeitüberschreitung(item["id"])
+                        continue
+                    final_name = a2.strip()
+                elif a in ("2", "/skip"):
+                    skip = True
+                else:
+                    final_name = a
+
+            if skip or (final_name or "").lower() == "/skip":
                 queue_manager.abschliessen(item["id"])
                 telegram_bot.sende_nachricht(
-                    f"Uebersprungen: {os.path.basename(bildpfad)}"
+                    f"Übersprungen: {os.path.basename(bildpfad)}"
                 )
-            else:
-                final_name = antwort.strip()
+            elif final_name:
                 queue_manager.abschliessen(item["id"])
                 job_id = job_manager.erstelle_job(bildpfad, final_name)
                 telegram_bot.sende_nachricht(
-                    f"Name: {final_name}\nVerarbeitung laeuft im Hintergrund..."
+                    f"Name gesetzt: {final_name}\nVerarbeitung läuft..."
                 )
                 threading.Thread(
-                    target=verarbeite_job,
-                    args=(job_id, 1),
-                    daemon=True
+                    target=verarbeite_job, args=(job_id, 1), daemon=True
                 ).start()
 
         except Exception as e:
-            telegram_bot.sende_nachricht(f"Fehler in Queue-Worker: {e}")
+            telegram_bot.sende_nachricht(f"Fehler im Dialog: {e}")
             queue_manager.zuruecksetzen(item["id"])
         finally:
             telegram_bot.beende_dialog()
             time.sleep(1)
 
 # ──────────────────────────────────────────────
-# Job-Pipeline: DCP → Upload → Ingest → Monitoring
+# Job-Pipeline
 # ──────────────────────────────────────────────
 
 def _phase_ausfuehren(job_id, phase, fn):
-    """Fuehrt eine Phase aus. Gibt True bei Erfolg, False bei Fehler zurueck."""
     try:
         job_manager.aktualisiere_phase(job_id, phase, "running")
         fn(job_id)
@@ -152,7 +227,6 @@ def _phase_ausfuehren(job_id, phase, fn):
         return False
 
 def verarbeite_job(job_id, ab_phase=1):
-    """Fuehrt Job-Pipeline ab der angegebenen Phase aus."""
     if ab_phase <= 1:
         if not _phase_ausfuehren(job_id, 1, _dcp_erstellen):
             return
@@ -180,11 +254,10 @@ def _monitoring_ueberwachen(job_id):
     raise NotImplementedError("Monitoring: noch nicht implementiert")
 
 # ──────────────────────────────────────────────
-# In-App Update System (v2.4)
+# In-App Update System
 # ──────────────────────────────────────────────
 
 def pruefe_update_ergebnis():
-    """Beim Start: Ergebnis des letzten In-App-Updates melden."""
     if not os.path.exists(UPDATE_RESULT_PFAD):
         return
     try:
@@ -198,48 +271,44 @@ def pruefe_update_ergebnis():
         else:
             telegram_bot.sende_nachricht(
                 f"Update fehlgeschlagen: {result.get('fehler', 'Unbekannter Fehler')}\n"
-                f"Rollback wurde durchgefuehrt."
+                f"Rollback wurde durchgeführt."
             )
     except Exception:
         pass
 
 def pruefe_update():
-    """Prueft auf neue Version, laedt Dateien ins Staging, startet updater.py."""
     try:
-        cfg = lade_config()
+        cfg        = lade_config()
         update_cfg = cfg.get("update", {})
-        version_url = update_cfg.get("github_version_url", "")
+        version_url  = update_cfg.get("github_version_url", "")
         manifest_url = update_cfg.get("github_manifest_url", "")
-        base_url = update_cfg.get("github_base_url", "")
+        base_url     = update_cfg.get("github_base_url", "")
 
         if not version_url or not manifest_url or not base_url:
             telegram_bot.sende_nachricht("Update-URLs nicht konfiguriert.")
             return
 
         github_version = urllib.request.urlopen(version_url, timeout=10).read().decode().strip()
-        local_version = lese_version()
+        local_version  = lese_version()
 
         if github_version == local_version:
             telegram_bot.sende_nachricht(f"Bereits aktuell: v{local_version}")
             return
 
         telegram_bot.sende_nachricht(
-            f"Update verfuegbar: v{local_version} -> v{github_version}\n"
+            f"Update verfügbar: v{local_version} → v{github_version}\n"
             f"Lade Dateien herunter..."
         )
 
-        # Manifest laden
         manifest_data = json.loads(
             urllib.request.urlopen(manifest_url, timeout=10).read().decode()
         )
         dateien = manifest_data.get("files", [])
 
-        # Staging-Verzeichnis vorbereiten
         if os.path.exists(STAGING_PFAD):
             shutil.rmtree(STAGING_PFAD)
         os.makedirs(os.path.join(STAGING_PFAD, "modules"), exist_ok=True)
 
-        # Alle Dateien herunterladen und Syntax pruefen
         for entry in dateien:
             src = entry["src"]
             url = base_url + src
@@ -248,7 +317,6 @@ def pruefe_update():
             if local_staged.endswith(".py"):
                 py_compile.compile(local_staged, doraise=True)
 
-        # pending_update.json schreiben
         pending = {
             "neue_version": github_version,
             "staging_pfad": STAGING_PFAD,
@@ -261,17 +329,15 @@ def pruefe_update():
         os.replace(tmp, PENDING_UPDATE_PFAD)
 
         telegram_bot.sende_nachricht(
-            f"Alle Dateien geladen und validiert.\n"
+            f"Dateien geladen und validiert.\n"
             f"Update wird jetzt installiert (Service-Neustart)..."
         )
 
-        # updater.py als separaten Prozess starten (ausserhalb des Dienstes)
         import sys
         subprocess.Popen(
             [sys.executable, UPDATER_PFAD],
             creationflags=subprocess.CREATE_NEW_CONSOLE
         )
-        # updater.py stoppt den Service (und damit diesen Prozess)
 
     except Exception as e:
         telegram_bot.sende_nachricht(f"Update fehlgeschlagen: {e}")
@@ -296,15 +362,15 @@ def aendere_intervall(minuten_str):
         speichere_config(cfg)
         schedule.clear("scan")
         schedule.every(minuten).minutes.do(starte_verarbeitung).tag("scan")
-        telegram_bot.sende_nachricht(f"Check-Intervall: {minuten} Minuten (gespeichert).")
+        telegram_bot.sende_nachricht(f"Scan-Intervall: {minuten} Minuten gespeichert.")
     except ValueError:
-        telegram_bot.sende_nachricht("Ungueltige Eingabe. Beispiel: /intervall 60")
+        telegram_bot.sende_nachricht("Ungültige Eingabe. Beispiel: /intervall 60")
 
 def aendere_update_intervall(stunden_str):
     try:
         stunden = int(stunden_str.strip())
         if not (0 <= stunden <= 168):
-            telegram_bot.sende_nachricht("Intervall muss zwischen 0 und 168 Stunden liegen (0 = deaktiviert).")
+            telegram_bot.sende_nachricht("Intervall muss zwischen 0 und 168 Stunden liegen.")
             return
         cfg = lade_config()
         cfg.setdefault("update", {})["auto_update_intervall_stunden"] = stunden
@@ -314,30 +380,51 @@ def aendere_update_intervall(stunden_str):
             schedule.every(stunden).hours.do(
                 lambda: threading.Thread(target=pruefe_update, daemon=True).start()
             ).tag("update")
-            telegram_bot.sende_nachricht(f"Auto-Update-Intervall: {stunden} Stunden (gespeichert).")
+            telegram_bot.sende_nachricht(f"Auto-Update: alle {stunden} Stunden gespeichert.")
         else:
             telegram_bot.sende_nachricht("Auto-Update deaktiviert.")
     except ValueError:
-        telegram_bot.sende_nachricht("Ungueltige Eingabe. Beispiel: /update_intervall 24")
+        telegram_bot.sende_nachricht("Ungültige Eingabe. Beispiel: /update_intervall 24")
 
 # ──────────────────────────────────────────────
-# Fehler-Menue
+# Wartung
 # ──────────────────────────────────────────────
 
-def zeige_fehler():
+def zeige_jobs():
     fehler = job_manager.hole_fehler()
-    if not fehler:
-        telegram_bot.sende_nachricht("Keine Fehler vorhanden.")
-        return
+    aktive = job_manager.hole_aktive()
     phasen = {1: "DCP", 2: "Upload", 3: "Ingest", 4: "Monitoring"}
-    msg = f"{len(fehler)} Fehler-Job(s):\n"
-    for j in fehler:
-        phase = phasen.get(j.get("error_phase"), "?")
-        name = (j.get("final_name") or os.path.basename(j.get("bildpfad", "")))[:35]
-        fehlertext = (j.get("fehler_text") or "")[:100]
-        msg += f"\nID: {j['id']}\nName: {name}\nPhase: {phase}\nFehler: {fehlertext}\n"
-    msg += "\n/retry_alle  oder  /retry <ID>"
+    t   = _trenn()
+    msg = f"{t}\nJobs & Fehler\n{t}\n"
+    msg += f"Laufend: {len(aktive)}  |  Fehler: {len(fehler)}\n"
+    if not fehler:
+        msg += "\nKeine Fehler vorhanden."
+    else:
+        msg += "\nFehler-Jobs:\n"
+        for j in fehler:
+            phase     = phasen.get(j.get("error_phase"), "?")
+            name      = (j.get("final_name") or os.path.basename(j.get("bildpfad", "")))[:28]
+            fehlertext = (j.get("fehler_text") or "")[:80]
+            msg += f"\n[{j['id']}] {name}\n"
+            msg += f"  Phase:  {phase}\n"
+            msg += f"  Fehler: {fehlertext}\n"
+            msg += f"  → /retry {j['id']}\n"
+        msg += f"\n{t}\n/retry_alle  – Alle Fehler neu starten"
     telegram_bot.sende_nachricht(msg)
+
+def toggle_pause():
+    global _scan_pausiert
+    with _scan_pausiert_lock:
+        _scan_pausiert = not _scan_pausiert
+        return _scan_pausiert
+
+def neustart_service():
+    telegram_bot.sende_nachricht("Service wird neu gestartet...")
+    time.sleep(1)
+    subprocess.Popen(
+        ["C:\\nssm\\nssm.exe", "restart", "dcp_automatisierung"],
+        creationflags=subprocess.CREATE_NEW_CONSOLE
+    )
 
 # ──────────────────────────────────────────────
 # Befehlshandler
@@ -346,6 +433,7 @@ def zeige_fehler():
 def bearbeite_befehl(text):
     cmd = text.strip()
     low = cmd.lower()
+    t   = _trenn()
 
     if low == "/version":
         telegram_bot.sende_nachricht(f"DCP-Automatisierung v{lese_version()}")
@@ -355,32 +443,42 @@ def bearbeite_befehl(text):
         threading.Thread(target=pruefe_update, daemon=True).start()
 
     elif low == "/status":
-        fehler = job_manager.hole_fehler()
-        aktive = job_manager.hole_aktive()
+        fehler  = job_manager.hole_fehler()
+        aktive  = job_manager.hole_aktive()
         pending = queue_manager.pending_anzahl()
-        cfg = lade_config()
-        intervall = cfg.get("zeitplan", {}).get("intervall_minuten", 60)
+        cfg     = lade_config()
+        intervall       = cfg.get("zeitplan", {}).get("intervall_minuten", 60)
         update_intervall = cfg.get("update", {}).get("auto_update_intervall_stunden", 24)
-        update_str = f"alle {update_intervall}h" if update_intervall > 0 else "deaktiviert"
+        update_str  = f"alle {update_intervall}h" if update_intervall > 0 else "aus"
+        with _scan_pausiert_lock:
+            pausiert = _scan_pausiert
+        scan_str = "PAUSIERT" if pausiert else "Aktiv"
         telegram_bot.sende_nachricht(
-            f"System: Aktiv  |  v{lese_version()}\n"
-            f"Queue: {pending} wartend\n"
-            f"Jobs: {len(aktive)} laufend, {len(fehler)} Fehler\n"
-            f"Check-Intervall: {intervall} Min\n"
-            f"Auto-Update: {update_str}"
+            f"{t}\n"
+            f"System: {scan_str}  |  v{lese_version()}\n"
+            f"{t}\n"
+            f"Queue:      {pending} wartend\n"
+            f"Jobs:       {len(aktive)} laufend  |  {len(fehler)} Fehler\n"
+            f"Scan:       alle {intervall} Min\n"
+            f"Auto-Upd:   {update_str}\n"
+            f"{t}"
         )
 
     elif low == "/check":
-        telegram_bot.sende_nachricht("Starte manuelle Ordner-Pruefung...")
+        with _scan_pausiert_lock:
+            if _scan_pausiert:
+                telegram_bot.sende_nachricht("Scan ist pausiert.\n/pause zum Fortsetzen.")
+                return
+        telegram_bot.sende_nachricht("Starte Ordner-Prüfung...")
         threading.Thread(target=starte_verarbeitung, daemon=True).start()
 
     elif low.startswith("/intervall"):
         teile = cmd.split(maxsplit=1)
         if len(teile) < 2:
-            cfg = lade_config()
+            cfg    = lade_config()
             aktuell = cfg.get("zeitplan", {}).get("intervall_minuten", 60)
             telegram_bot.sende_nachricht(
-                f"Aktuelles Intervall: {aktuell} Minuten\nAendern: /intervall <Minuten>"
+                f"Scan-Intervall: {aktuell} Minuten\nÄndern: /intervall <Minuten>"
             )
         else:
             aendere_intervall(teile[1])
@@ -388,17 +486,16 @@ def bearbeite_befehl(text):
     elif low.startswith("/update_intervall"):
         teile = cmd.split(maxsplit=1)
         if len(teile) < 2:
-            cfg = lade_config()
+            cfg    = lade_config()
             aktuell = cfg.get("update", {}).get("auto_update_intervall_stunden", 24)
             telegram_bot.sende_nachricht(
-                f"Auto-Update-Intervall: {aktuell} Stunden (0 = deaktiviert)\n"
-                f"Aendern: /update_intervall <Stunden>"
+                f"Auto-Update: {aktuell}h (0 = deaktiviert)\nÄndern: /update_intervall <Stunden>"
             )
         else:
             aendere_update_intervall(teile[1])
 
-    elif low == "/fehler":
-        zeige_fehler()
+    elif low in ("/jobs", "/fehler"):
+        zeige_jobs()
 
     elif low == "/retry_alle":
         jobs = job_manager.alle_retry()
@@ -416,7 +513,7 @@ def bearbeite_befehl(text):
         j = job_manager.retry_job(job_id)
         if j:
             telegram_bot.sende_nachricht(
-                f"Job {job_id} neu gestartet ab Phase {j['current_phase']}..."
+                f"Job {job_id} neu gestartet (Phase {j['current_phase']})..."
             )
             threading.Thread(
                 target=verarbeite_job, args=(j["id"], j["current_phase"]), daemon=True
@@ -424,55 +521,69 @@ def bearbeite_befehl(text):
         else:
             telegram_bot.sende_nachricht(f"Job '{job_id}' nicht gefunden oder nicht wiederholbar.")
 
+    elif low == "/pause":
+        pausiert = toggle_pause()
+        if pausiert:
+            telegram_bot.sende_nachricht(
+                "Scan pausiert.\nNeue Bilder werden nicht erkannt.\n/pause zum Fortsetzen."
+            )
+        else:
+            telegram_bot.sende_nachricht("Scan fortgesetzt.")
+
+    elif low == "/neustart":
+        threading.Thread(target=neustart_service, daemon=True).start()
+
     elif low == "/hilfe":
         telegram_bot.sende_nachricht(
-            "Befehle:\n"
-            "/version               Aktuelle Version\n"
-            "/update                Update von GitHub\n"
-            "/update_intervall <h>  Auto-Update-Intervall (0=aus)\n"
-            "/check                 Ordner jetzt pruefen\n"
-            "/status                Systemstatus\n"
-            "/intervall <n>         Check-Intervall (Minuten)\n"
-            "/fehler                Fehler-Jobs anzeigen\n"
-            "/retry <ID>            Job neu starten\n"
-            "/retry_alle            Alle Fehler-Jobs neu\n"
-            "/hilfe                 Diese Hilfe"
+            f"{t}\n"
+            f"DCP-Automatisierung\n"
+            f"{t}\n"
+            f"/status              System-Status\n"
+            f"/check               Ordner jetzt prüfen\n"
+            f"/version             Version anzeigen\n"
+            f"\n"
+            f"── Update ────────────────────\n"
+            f"/update              Update suchen\n"
+            f"/update_intervall <h>  Auto-Update\n"
+            f"\n"
+            f"── Einstellungen ─────────────\n"
+            f"/intervall <n>       Scan alle n Min\n"
+            f"\n"
+            f"── Wartung ───────────────────\n"
+            f"/jobs                Fehler & Retry\n"
+            f"/pause               Scan pausieren\n"
+            f"/neustart            Service neu starten\n"
+            f"{t}"
         )
 
     else:
-        telegram_bot.sende_nachricht(f"Unbekannt: {text}\n/hilfe fuer alle Befehle.")
+        telegram_bot.sende_nachricht(f"Unbekannt: {text}\n/hilfe für alle Befehle.")
 
 # ──────────────────────────────────────────────
 # Einstiegspunkt
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Absturz-Recovery: naming → pending
     queue_manager.naming_zuruecksetzen()
 
     cfg = lade_config()
-    intervall = cfg.get("zeitplan", {}).get("intervall_minuten", 60)
+    intervall        = cfg.get("zeitplan", {}).get("intervall_minuten", 60)
     update_intervall = cfg.get("update", {}).get("auto_update_intervall_stunden", 24)
 
-    # Status-Callback fuer job_manager setzen
     job_manager.setze_status_callback(telegram_bot.sende_nachricht)
 
-    # Update-Ergebnis vom letzten Neustart melden
     pruefe_update_ergebnis()
 
     telegram_bot.sende_nachricht(f"DCP-Automatisierung v{lese_version()} gestartet.")
 
-    # Telegram-Listener
     threading.Thread(
         target=telegram_bot.starte_listener,
         args=(bearbeite_befehl,),
         daemon=True
     ).start()
 
-    # Queue-Worker
     threading.Thread(target=queue_worker, daemon=True).start()
 
-    # Scheduler
     schedule.every(intervall).minutes.do(starte_verarbeitung).tag("scan")
     schedule.every(5).minutes.do(job_manager.sende_bundle_wenn_noetig).tag("bundle")
     if update_intervall > 0:
