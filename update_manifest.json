@@ -1,0 +1,14 @@
+{
+  "version": "2.4",
+  "files": [
+    {"src": "main.py",                      "dest": "C:\\dcp_automatisierung\\main.py"},
+    {"src": "updater.py",                   "dest": "C:\\dcp_automatisierung\\updater.py"},
+    {"src": "modules/__init__.py",          "dest": "C:\\dcp_automatisierung\\modules\\__init__.py"},
+    {"src": "modules/logger.py",            "dest": "C:\\dcp_automatisierung\\modules\\logger.py"},
+    {"src": "modules/watcher.py",           "dest": "C:\\dcp_automatisierung\\modules\\watcher.py"},
+    {"src": "modules/analyzer.py",          "dest": "C:\\dcp_automatisierung\\modules\\analyzer.py"},
+    {"src": "modules/telegram_bot.py",      "dest": "C:\\dcp_automatisierung\\modules\\telegram_bot.py"},
+    {"src": "modules/queue_manager.py",     "dest": "C:\\dcp_automatisierung\\modules\\queue_manager.py"},
+    {"src": "modules/job_manager.py",       "dest": "C:\\dcp_automatisierung\\modules\\job_manager.py"}
+  ]
+}
