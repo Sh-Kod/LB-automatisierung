@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v2.3
+#   DCP AUTOMATISIERUNG - INSTALLER v2.4
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -20,7 +20,7 @@ $IS_UPDATE = ($LAUFWERK_PARAM -ne "")
 if (-not $IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.3" -ForegroundColor Cyan
+    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.4" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -176,6 +176,8 @@ $ordner = @(
     "C:\\dcp_automatisierung\\rules",
     "C:\\dcp_automatisierung\\logs",
     "C:\\dcp_automatisierung\\temp",
+    "C:\\dcp_automatisierung\\staging",
+    "C:\\dcp_automatisierung\\backup",
     "${LAUFWERK}:\\K.O.D Atomations\\Neue LB",
     "${LAUFWERK}:\\K.O.D Atomations\\Neue LB 10sec",
     "${LAUFWERK}:\\K.O.D Atomations\\Neue LB 15sec",
@@ -189,14 +191,17 @@ Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
 Write-Host "[7/8] Erstelle Scripts und Konfiguration..." -ForegroundColor Green
 
-"2.3" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
+"2.4" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
 
 if ($IS_UPDATE -and $configBackup -ne "") {
     [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\config.yaml", $configBackup, $utf8NoBom)
     $cfg = Get-Content "C:\\dcp_automatisierung\\config.yaml" -Raw
     if ($cfg -notmatch "github_version_url") {
-        $addSection = "`nupdate:`n  github_version_url: `"https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/version.txt`"`n  github_update_url: `"https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/update.ps1`"`n"
+        $addSection = "`nupdate:`n  github_version_url: `"https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/version.txt`"`n  github_manifest_url: `"https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/update_manifest.json`"`n  github_base_url: `"https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/`"`n  auto_update_intervall_stunden: 24`n"
         [System.IO.File]::AppendAllText("C:\\dcp_automatisierung\\config.yaml", $addSection, $utf8NoBom)
+    } elseif ($cfg -notmatch "github_manifest_url") {
+        $addFields = "`n  github_manifest_url: `"https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/update_manifest.json`"`n  github_base_url: `"https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/`"`n  auto_update_intervall_stunden: 24`n"
+        [System.IO.File]::AppendAllText("C:\\dcp_automatisierung\\config.yaml", $addFields, $utf8NoBom)
     }
     Write-Host "      Config aus Backup wiederhergestellt!" -ForegroundColor Gray
 } else {
@@ -230,7 +235,9 @@ doremi:
   web_pass: "1234"
 update:
   github_version_url: "https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/version.txt"
-  github_update_url: "https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/update.ps1"
+  github_manifest_url: "https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/update_manifest.json"
+  github_base_url: "https://raw.githubusercontent.com/Sh-Kod/LB-automatisierung/main/"
+  auto_update_intervall_stunden: 24
 "@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\config.yaml", $_, $utf8NoBom) }
 }
 
@@ -439,8 +446,10 @@ def _lade():
         return {"items": []}
 
 def _speichere(data):
-    with open(QUEUE_PFAD, "w", encoding="utf-8") as f:
+    tmp = QUEUE_PFAD + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, QUEUE_PFAD)
 
 def hinzufuegen(bildpfad, dauer_sek):
     """Fuegt Bild zur Queue hinzu. Gibt ID zurueck, oder None wenn bereits vorhanden."""
@@ -536,8 +545,10 @@ def _lade():
         return {"jobs": []}
 
 def _speichere(data):
-    with open(JOBS_PFAD, "w", encoding="utf-8") as f:
+    tmp = JOBS_PFAD + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, JOBS_PFAD)
 
 def erstelle_job(bildpfad, final_name):
     """Legt neuen Job an. Gibt Job-ID zurueck."""
@@ -713,12 +724,225 @@ def sende_bundle_wenn_noetig():
 '@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\modules\\job_manager.py", $_, $utf8NoBom) }
 
 @'
+#!/usr/bin/env python3
+# updater.py - DCP Automatisierung In-App Updater
+# Laeuft als separater Prozess ausserhalb des Windows-Dienstes.
+# Stdlib only - keine externen Abhaengigkeiten.
+
+import json
 import os
+import shutil
 import subprocess
-import tempfile
+import sys
+import time
+from datetime import datetime
+
+BASE_PFAD = "C:\\dcp_automatisierung"
+PENDING_PFAD = os.path.join(BASE_PFAD, "pending_update.json")
+RESULT_PFAD = os.path.join(BASE_PFAD, "update_result.json")
+BACKUP_PFAD = os.path.join(BASE_PFAD, "backup")
+NSSM = "C:\\nssm\\nssm.exe"
+SERVICE = "dcp_automatisierung"
+LOG_PFAD = os.path.join(BASE_PFAD, "logs", "updater.log")
+
+
+def log(msg):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line)
+    try:
+        os.makedirs(os.path.dirname(LOG_PFAD), exist_ok=True)
+        with open(LOG_PFAD, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def schreibe_result(erfolg, neue_version="", fehler=""):
+    result = {
+        "erfolg": erfolg,
+        "neue_version": neue_version,
+        "fehler": fehler,
+        "timestamp": datetime.now().isoformat()
+    }
+    try:
+        tmp = RESULT_PFAD + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, RESULT_PFAD)
+    except Exception as e:
+        log(f"Konnte update_result.json nicht schreiben: {e}")
+
+
+def stoppe_service():
+    log("Stoppe Service...")
+    try:
+        subprocess.run([NSSM, "stop", SERVICE], capture_output=True, timeout=30)
+    except Exception as e:
+        log(f"Fehler beim Stoppen: {e}")
+    for _ in range(20):
+        time.sleep(2)
+        try:
+            r = subprocess.run([NSSM, "status", SERVICE],
+                               capture_output=True, text=True, timeout=10)
+            out = r.stdout + r.stderr
+            if "SERVICE_STOPPED" in out:
+                log("Service gestoppt.")
+                return True
+        except Exception:
+            pass
+    log("Service stop timeout - fahre trotzdem fort.")
+    return True
+
+
+def starte_service():
+    log("Starte Service...")
+    try:
+        subprocess.run([NSSM, "start", SERVICE], capture_output=True, timeout=30)
+        time.sleep(3)
+        log("Service gestartet.")
+    except Exception as e:
+        log(f"Fehler beim Starten: {e}")
+
+
+def erstelle_backup(dateien, backup_dir):
+    log(f"Erstelle Backup in: {backup_dir}")
+    os.makedirs(backup_dir, exist_ok=True)
+    gesichert = 0
+    for entry in dateien:
+        dest = entry["dest"]
+        if os.path.exists(dest):
+            rel = os.path.relpath(dest, BASE_PFAD)
+            backup_dest = os.path.join(backup_dir, rel)
+            os.makedirs(os.path.dirname(backup_dest), exist_ok=True)
+            shutil.copy2(dest, backup_dest)
+            gesichert += 1
+    log(f"Backup abgeschlossen: {gesichert} Dateien gesichert.")
+
+
+def rollback(dateien, backup_dir):
+    log(f"Fuehre Rollback durch aus: {backup_dir}")
+    wiederhergestellt = 0
+    for entry in dateien:
+        dest = entry["dest"]
+        rel = os.path.relpath(dest, BASE_PFAD)
+        backup_src = os.path.join(backup_dir, rel)
+        if os.path.exists(backup_src):
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(backup_src, dest)
+            wiederhergestellt += 1
+    log(f"Rollback abgeschlossen: {wiederhergestellt} Dateien wiederhergestellt.")
+
+
+def wende_update_an(dateien, staging_pfad):
+    log("Wende Update an...")
+    for entry in dateien:
+        src_rel = entry["src"]
+        dest = entry["dest"]
+        staged = os.path.join(staging_pfad, src_rel.replace("/", os.sep))
+        if not os.path.exists(staged):
+            raise FileNotFoundError(f"Staged file nicht gefunden: {staged}")
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        tmp = dest + ".new"
+        shutil.copy2(staged, tmp)
+        os.replace(tmp, dest)
+        log(f"  -> {dest}")
+    log("Update angewendet.")
+
+
+def main():
+    log("=" * 50)
+    log("DCP Automatisierung Updater gestartet")
+    log("=" * 50)
+
+    if not os.path.exists(PENDING_PFAD):
+        log(f"Kein pending_update.json gefunden: {PENDING_PFAD}")
+        sys.exit(1)
+
+    try:
+        with open(PENDING_PFAD, "r", encoding="utf-8") as f:
+            pending = json.load(f)
+    except Exception as e:
+        log(f"Konnte pending_update.json nicht lesen: {e}")
+        sys.exit(1)
+
+    neue_version = pending.get("neue_version", "?")
+    staging_pfad = pending.get("staging_pfad", "")
+    dateien = pending.get("dateien", [])
+
+    log(f"Update auf Version: {neue_version}")
+    log(f"Anzahl Dateien: {len(dateien)}")
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = os.path.join(BACKUP_PFAD, f"v{neue_version}_{ts}")
+
+    stoppe_service()
+    time.sleep(2)
+
+    try:
+        erstelle_backup(dateien, backup_dir)
+    except Exception as e:
+        log(f"Backup fehlgeschlagen: {e}")
+        schreibe_result(False, neue_version, f"Backup fehlgeschlagen: {e}")
+        starte_service()
+        sys.exit(1)
+
+    try:
+        wende_update_an(dateien, staging_pfad)
+    except Exception as e:
+        log(f"Update fehlgeschlagen: {e}")
+        log("Starte Rollback...")
+        try:
+            rollback(dateien, backup_dir)
+            log("Rollback erfolgreich.")
+        except Exception as re:
+            log(f"Rollback fehlgeschlagen: {re}")
+        schreibe_result(False, neue_version, str(e))
+        starte_service()
+        sys.exit(1)
+
+    try:
+        version_pfad = os.path.join(BASE_PFAD, "version.txt")
+        tmp = version_pfad + ".new"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(neue_version)
+        os.replace(tmp, version_pfad)
+        log(f"Version aktualisiert: {neue_version}")
+    except Exception as e:
+        log(f"Konnte version.txt nicht aktualisieren: {e}")
+
+    try:
+        if os.path.exists(staging_pfad):
+            shutil.rmtree(staging_pfad)
+    except Exception:
+        pass
+
+    try:
+        os.remove(PENDING_PFAD)
+    except Exception:
+        pass
+
+    schreibe_result(True, neue_version)
+    log(f"Update auf v{neue_version} erfolgreich abgeschlossen!")
+
+    starte_service()
+    log("Updater beendet.")
+
+
+if __name__ == "__main__":
+    main()
+'@ | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\updater.py", $_, $utf8NoBom) }
+
+@'
+import json
+import os
+import py_compile
+import shutil
+import subprocess
 import threading
 import time
 import urllib.request
+from datetime import datetime
 
 import schedule
 import yaml
@@ -727,6 +951,10 @@ from modules import analyzer, job_manager, queue_manager, telegram_bot, watcher
 
 CONFIG_PFAD = "C:\\dcp_automatisierung\\config.yaml"
 VERSION_PFAD = "C:\\dcp_automatisierung\\version.txt"
+STAGING_PFAD = "C:\\dcp_automatisierung\\staging"
+PENDING_UPDATE_PFAD = "C:\\dcp_automatisierung\\pending_update.json"
+UPDATE_RESULT_PFAD = "C:\\dcp_automatisierung\\update_result.json"
+UPDATER_PFAD = "C:\\dcp_automatisierung\\updater.py"
 
 # ──────────────────────────────────────────────
 # Hilfsfunktionen
@@ -737,8 +965,10 @@ def lade_config():
         return yaml.safe_load(f)
 
 def speichere_config(config):
-    with open(CONFIG_PFAD, "w", encoding="utf-8") as f:
+    tmp = CONFIG_PFAD + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
+    os.replace(tmp, CONFIG_PFAD)
 
 def lese_version():
     try:
@@ -776,7 +1006,7 @@ def queue_worker():
     """Laeuft dauerhaft in eigenem Thread.
     Verarbeitet Queue-Items SEQUENTIELL (genau 1 Dialog gleichzeitig).
     Hintergrund-Jobs laufen parallel."""
-    time.sleep(5)  # kurz warten bis System vollstaendig gestartet
+    time.sleep(5)
     while True:
         item = queue_manager.naechstes_pending()
         if not item:
@@ -784,7 +1014,6 @@ def queue_worker():
             continue
 
         if not telegram_bot.starte_dialog():
-            # Sollte nicht vorkommen (Worker laeuft single-threaded)
             queue_manager.zuruecksetzen(item["id"])
             time.sleep(5)
             continue
@@ -794,7 +1023,6 @@ def queue_worker():
             dauer_sek = item["dauer_sek"]
             pending_rest = queue_manager.pending_anzahl()
 
-            # Bild senden
             caption = f"Neues Bild ({dauer_sek}s Werbung)"
             if pending_rest > 0:
                 caption += f"  |  Noch {pending_rest} in Queue"
@@ -803,7 +1031,6 @@ def queue_worker():
             except Exception:
                 telegram_bot.sende_nachricht(f"Bild: {os.path.basename(bildpfad)}")
 
-            # OCR
             ocr_text = ""
             try:
                 ocr_text = analyzer.lese_text_aus_bild(bildpfad)
@@ -817,7 +1044,6 @@ def queue_worker():
             )
             telegram_bot.sende_nachricht(prompt)
 
-            # Auf Nutzer-Antwort warten (60 Minuten Timeout)
             antwort = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
 
             if antwort is None or antwort.strip().lower() == "/skip":
@@ -847,11 +1073,9 @@ def queue_worker():
 
 # ──────────────────────────────────────────────
 # Job-Pipeline: DCP → Upload → Ingest → Monitoring
-# (Phasen koennen einzeln wiederholt werden)
 # ──────────────────────────────────────────────
 
 def _phase_ausfuehren(job_id, phase, fn):
-    """Fuehrt eine Phase aus. Gibt True bei Erfolg, False bei Fehler zurueck."""
     try:
         job_manager.aktualisiere_phase(job_id, phase, "running")
         fn(job_id)
@@ -862,8 +1086,6 @@ def _phase_ausfuehren(job_id, phase, fn):
         return False
 
 def verarbeite_job(job_id, ab_phase=1):
-    """Fuehrt Job-Pipeline ab der angegebenen Phase aus.
-    Laeuft im Hintergrund-Thread - mehrere Jobs parallel erlaubt."""
     if ab_phase <= 1:
         if not _phase_ausfuehren(job_id, 1, _dcp_erstellen):
             return
@@ -878,57 +1100,116 @@ def verarbeite_job(job_id, ab_phase=1):
             return
     job_manager.markiere_fertig(job_id)
 
-# --- Platzhalter-Implementierungen (Phase 2 ersetzt diese) ---
-
 def _dcp_erstellen(job_id):
-    # TODO: DCP-Erstellung mit dcpomatic2_cli
     raise NotImplementedError("DCP-Erstellung: noch nicht implementiert")
 
 def _upload_durchfuehren(job_id):
-    # TODO: FTP-Upload zur Doremi
     raise NotImplementedError("FTP-Upload: noch nicht implementiert")
 
 def _ingest_starten(job_id):
-    # TODO: Doremi-Ingest ueber Web-Interface
     raise NotImplementedError("Doremi-Ingest: noch nicht implementiert")
 
 def _monitoring_ueberwachen(job_id):
-    # TODO: Ingest-Monitoring ueberwachen
     raise NotImplementedError("Monitoring: noch nicht implementiert")
 
 # ──────────────────────────────────────────────
-# Update
+# In-App Update System (v2.4)
 # ──────────────────────────────────────────────
 
-def pruefe_update():
+def pruefe_update_ergebnis():
+    """Beim Start: Ergebnis des letzten In-App-Updates melden."""
+    if not os.path.exists(UPDATE_RESULT_PFAD):
+        return
     try:
-        cfg = lade_config()
-        url = cfg.get("update", {}).get("github_version_url", "")
-        if not url:
-            telegram_bot.sende_nachricht("Keine Update-URL konfiguriert.")
-            return
-        github_version = urllib.request.urlopen(url, timeout=10).read().decode().strip()
-        local_version = lese_version()
-        if github_version != local_version:
+        with open(UPDATE_RESULT_PFAD, "r", encoding="utf-8") as f:
+            result = json.load(f)
+        os.remove(UPDATE_RESULT_PFAD)
+        if result.get("erfolg"):
             telegram_bot.sende_nachricht(
-                f"Update verfuegbar!\n"
-                f"Installiert: v{local_version}  →  Neu: v{github_version}\n"
-                f"Starte Update..."
-            )
-            update_url = cfg.get("update", {}).get("github_update_url", "")
-            tmp = os.path.join(tempfile.gettempdir(), "dcp_update.ps1")
-            urllib.request.urlretrieve(update_url, tmp)
-            subprocess.Popen(
-                ["powershell", "-ExecutionPolicy", "Bypass", "-File", tmp],
-                creationflags=subprocess.CREATE_NEW_CONSOLE
+                f"Update auf v{result.get('neue_version', '?')} erfolgreich installiert!"
             )
         else:
+            telegram_bot.sende_nachricht(
+                f"Update fehlgeschlagen: {result.get('fehler', 'Unbekannter Fehler')}\n"
+                f"Rollback wurde durchgefuehrt."
+            )
+    except Exception:
+        pass
+
+def pruefe_update():
+    """Prueft auf neue Version, laedt Dateien ins Staging, startet updater.py."""
+    try:
+        cfg = lade_config()
+        update_cfg = cfg.get("update", {})
+        version_url = update_cfg.get("github_version_url", "")
+        manifest_url = update_cfg.get("github_manifest_url", "")
+        base_url = update_cfg.get("github_base_url", "")
+
+        if not version_url or not manifest_url or not base_url:
+            telegram_bot.sende_nachricht("Update-URLs nicht konfiguriert.")
+            return
+
+        github_version = urllib.request.urlopen(version_url, timeout=10).read().decode().strip()
+        local_version = lese_version()
+
+        if github_version == local_version:
             telegram_bot.sende_nachricht(f"Bereits aktuell: v{local_version}")
+            return
+
+        telegram_bot.sende_nachricht(
+            f"Update verfuegbar: v{local_version} -> v{github_version}\n"
+            f"Lade Dateien herunter..."
+        )
+
+        manifest_data = json.loads(
+            urllib.request.urlopen(manifest_url, timeout=10).read().decode()
+        )
+        dateien = manifest_data.get("files", [])
+
+        if os.path.exists(STAGING_PFAD):
+            shutil.rmtree(STAGING_PFAD)
+        os.makedirs(os.path.join(STAGING_PFAD, "modules"), exist_ok=True)
+
+        for entry in dateien:
+            src = entry["src"]
+            url = base_url + src
+            local_staged = os.path.join(STAGING_PFAD, src.replace("/", os.sep))
+            urllib.request.urlretrieve(url, local_staged)
+            if local_staged.endswith(".py"):
+                py_compile.compile(local_staged, doraise=True)
+
+        pending = {
+            "neue_version": github_version,
+            "staging_pfad": STAGING_PFAD,
+            "dateien": dateien,
+            "timestamp": datetime.now().isoformat()
+        }
+        tmp = PENDING_UPDATE_PFAD + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(pending, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, PENDING_UPDATE_PFAD)
+
+        telegram_bot.sende_nachricht(
+            f"Alle Dateien geladen und validiert.\n"
+            f"Update wird jetzt installiert (Service-Neustart)..."
+        )
+
+        import sys
+        subprocess.Popen(
+            [sys.executable, UPDATER_PFAD],
+            creationflags=subprocess.CREATE_NEW_CONSOLE
+        )
+
     except Exception as e:
         telegram_bot.sende_nachricht(f"Update fehlgeschlagen: {e}")
+        try:
+            if os.path.exists(STAGING_PFAD):
+                shutil.rmtree(STAGING_PFAD)
+        except Exception:
+            pass
 
 # ──────────────────────────────────────────────
-# Intervall aendern (persistent + Scheduler-Neustart)
+# Intervall-Einstellungen
 # ──────────────────────────────────────────────
 
 def aendere_intervall(minuten_str):
@@ -945,6 +1226,26 @@ def aendere_intervall(minuten_str):
         telegram_bot.sende_nachricht(f"Check-Intervall: {minuten} Minuten (gespeichert).")
     except ValueError:
         telegram_bot.sende_nachricht("Ungueltige Eingabe. Beispiel: /intervall 60")
+
+def aendere_update_intervall(stunden_str):
+    try:
+        stunden = int(stunden_str.strip())
+        if not (0 <= stunden <= 168):
+            telegram_bot.sende_nachricht("Intervall muss zwischen 0 und 168 Stunden liegen (0 = deaktiviert).")
+            return
+        cfg = lade_config()
+        cfg.setdefault("update", {})["auto_update_intervall_stunden"] = stunden
+        speichere_config(cfg)
+        schedule.clear("update")
+        if stunden > 0:
+            schedule.every(stunden).hours.do(
+                lambda: threading.Thread(target=pruefe_update, daemon=True).start()
+            ).tag("update")
+            telegram_bot.sende_nachricht(f"Auto-Update-Intervall: {stunden} Stunden (gespeichert).")
+        else:
+            telegram_bot.sende_nachricht("Auto-Update deaktiviert.")
+    except ValueError:
+        telegram_bot.sende_nachricht("Ungueltige Eingabe. Beispiel: /update_intervall 24")
 
 # ──────────────────────────────────────────────
 # Fehler-Menue
@@ -986,11 +1287,14 @@ def bearbeite_befehl(text):
         pending = queue_manager.pending_anzahl()
         cfg = lade_config()
         intervall = cfg.get("zeitplan", {}).get("intervall_minuten", 60)
+        update_intervall = cfg.get("update", {}).get("auto_update_intervall_stunden", 24)
+        update_str = f"alle {update_intervall}h" if update_intervall > 0 else "deaktiviert"
         telegram_bot.sende_nachricht(
             f"System: Aktiv  |  v{lese_version()}\n"
             f"Queue: {pending} wartend\n"
             f"Jobs: {len(aktive)} laufend, {len(fehler)} Fehler\n"
-            f"Check-Intervall: {intervall} Min"
+            f"Check-Intervall: {intervall} Min\n"
+            f"Auto-Update: {update_str}"
         )
 
     elif low == "/check":
@@ -1007,6 +1311,18 @@ def bearbeite_befehl(text):
             )
         else:
             aendere_intervall(teile[1])
+
+    elif low.startswith("/update_intervall"):
+        teile = cmd.split(maxsplit=1)
+        if len(teile) < 2:
+            cfg = lade_config()
+            aktuell = cfg.get("update", {}).get("auto_update_intervall_stunden", 24)
+            telegram_bot.sende_nachricht(
+                f"Auto-Update-Intervall: {aktuell} Stunden (0 = deaktiviert)\n"
+                f"Aendern: /update_intervall <Stunden>"
+            )
+        else:
+            aendere_update_intervall(teile[1])
 
     elif low == "/fehler":
         zeige_fehler()
@@ -1038,15 +1354,16 @@ def bearbeite_befehl(text):
     elif low == "/hilfe":
         telegram_bot.sende_nachricht(
             "Befehle:\n"
-            "/version          Aktuelle Version\n"
-            "/update           Update von GitHub\n"
-            "/check            Ordner jetzt pruefen\n"
-            "/status           Systemstatus\n"
-            "/intervall <n>    Check-Intervall aendern\n"
-            "/fehler           Fehler-Jobs anzeigen\n"
-            "/retry <ID>       Job neu starten\n"
-            "/retry_alle       Alle Fehler-Jobs neu\n"
-            "/hilfe            Diese Hilfe"
+            "/version               Aktuelle Version\n"
+            "/update                Update von GitHub\n"
+            "/update_intervall <h>  Auto-Update-Intervall (0=aus)\n"
+            "/check                 Ordner jetzt pruefen\n"
+            "/status                Systemstatus\n"
+            "/intervall <n>         Check-Intervall (Minuten)\n"
+            "/fehler                Fehler-Jobs anzeigen\n"
+            "/retry <ID>            Job neu starten\n"
+            "/retry_alle            Alle Fehler-Jobs neu\n"
+            "/hilfe                 Diese Hilfe"
         )
 
     else:
@@ -1057,30 +1374,32 @@ def bearbeite_befehl(text):
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Absturz-Recovery: naming → pending
     queue_manager.naming_zuruecksetzen()
 
     cfg = lade_config()
     intervall = cfg.get("zeitplan", {}).get("intervall_minuten", 60)
+    update_intervall = cfg.get("update", {}).get("auto_update_intervall_stunden", 24)
 
-    # Status-Callback fuer job_manager setzen
     job_manager.setze_status_callback(telegram_bot.sende_nachricht)
+
+    pruefe_update_ergebnis()
 
     telegram_bot.sende_nachricht(f"DCP-Automatisierung v{lese_version()} gestartet.")
 
-    # Telegram-Listener (leitet Nachrichten an Dialog oder Befehlshandler)
     threading.Thread(
         target=telegram_bot.starte_listener,
         args=(bearbeite_befehl,),
         daemon=True
     ).start()
 
-    # Queue-Worker (sequentieller Benennungs-Dialog)
     threading.Thread(target=queue_worker, daemon=True).start()
 
-    # Scheduler
     schedule.every(intervall).minutes.do(starte_verarbeitung).tag("scan")
     schedule.every(5).minutes.do(job_manager.sende_bundle_wenn_noetig).tag("bundle")
+    if update_intervall > 0:
+        schedule.every(update_intervall).hours.do(
+            lambda: threading.Thread(target=pruefe_update, daemon=True).start()
+        ).tag("update")
 
     starte_verarbeitung()
 
@@ -1127,13 +1446,13 @@ $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 if ($IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.3" -ForegroundColor Green
+    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.4" -ForegroundColor Green
     Write-Host "   Dienst: $status" -ForegroundColor White
     Write-Host "  ============================================================" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.3" -ForegroundColor Green
+    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.4" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Laufwerk  : ${LAUFWERK}:\\" -ForegroundColor White
@@ -1142,7 +1461,7 @@ if ($IS_UPDATE) {
     Write-Host "   Dienst    : $status" -ForegroundColor White
     Write-Host ""
     Write-Host "   Telegram-Befehle:" -ForegroundColor Yellow
-    Write-Host "     /version /update /check /status /intervall /fehler /retry /retry_alle /hilfe" -ForegroundColor Gray
+    Write-Host "     /version /update /update_intervall /check /status /intervall /fehler /retry /retry_alle /hilfe" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
