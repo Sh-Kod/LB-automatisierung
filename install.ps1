@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v2.7
+#   DCP AUTOMATISIERUNG - INSTALLER v2.8
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -20,7 +20,7 @@ $IS_UPDATE = ($LAUFWERK_PARAM -ne "")
 if (-not $IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.7" -ForegroundColor Cyan
+    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.8" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -191,7 +191,7 @@ Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
 Write-Host "[7/8] Erstelle Scripts und Konfiguration..." -ForegroundColor Green
 
-"2.7" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
+"2.8" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
 
 if ($IS_UPDATE -and $configBackup -ne "") {
     [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\config.yaml", $configBackup, $utf8NoBom)
@@ -1726,13 +1726,13 @@ $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 if ($IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.7" -ForegroundColor Green
+    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.8" -ForegroundColor Green
     Write-Host "   Dienst: $status" -ForegroundColor White
     Write-Host "  ============================================================" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.7" -ForegroundColor Green
+    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.8" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Laufwerk  : ${LAUFWERK}:\\" -ForegroundColor White
