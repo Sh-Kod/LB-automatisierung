@@ -216,6 +216,16 @@ def main():
 
     # Service neu starten
     starte_service()
+
+    # Task Scheduler Aufgabe aufraeumen
+    try:
+        subprocess.Popen(
+            ["schtasks", "/delete", "/f", "/tn", "DCP_Automatisierung_Updater"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    except Exception:
+        pass
+
     log("Updater beendet.")
 
 

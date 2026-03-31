@@ -334,10 +334,23 @@ def pruefe_update():
         )
 
         import sys
-        subprocess.Popen(
-            [sys.executable, UPDATER_PFAD],
-            creationflags=subprocess.CREATE_NEW_CONSOLE
-        )
+        from datetime import timedelta
+        # Task Scheduler: updater.py ausserhalb des Service-Prozessbaums starten.
+        # Direkte subprocess.Popen wuerde durch NSSM AppKillProcessTree getoetet.
+        start_time = (datetime.now() + timedelta(minutes=2)).strftime("%H:%M")
+        r1 = subprocess.run([
+            "schtasks", "/create", "/f",
+            "/tn", "DCP_Automatisierung_Updater",
+            "/tr", f'"{sys.executable}" "{UPDATER_PFAD}"',
+            "/sc", "once", "/st", start_time, "/ru", "SYSTEM"
+        ], capture_output=True, text=True)
+        if r1.returncode != 0:
+            raise RuntimeError(f"Task erstellen fehlgeschlagen: {r1.stderr.strip()}")
+        r2 = subprocess.run([
+            "schtasks", "/run", "/tn", "DCP_Automatisierung_Updater"
+        ], capture_output=True, text=True)
+        if r2.returncode != 0:
+            raise RuntimeError(f"Task starten fehlgeschlagen: {r2.stderr.strip()}")
 
     except Exception as e:
         telegram_bot.sende_nachricht(f"Update fehlgeschlagen: {e}")
