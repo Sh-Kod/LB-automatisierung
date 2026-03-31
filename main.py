@@ -282,8 +282,11 @@ def _dcp_erstellen(job_id):
         r1 = subprocess.run(
             [create_exe,
              "--name", final_name,
+             "--no-use-isdcf-name",
              "--still-length", str(dauer),
              "--dcp-content-type", "ADV",
+             "--twok",
+             "--j2k-bandwidth", "100",
              "-o", tmp_dir,
              bildpfad],
             capture_output=True, text=True, timeout=120
