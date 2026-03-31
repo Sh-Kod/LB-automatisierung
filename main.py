@@ -242,7 +242,6 @@ def verarbeite_job(job_id, ab_phase=1):
     job_manager.markiere_fertig(job_id)
 
 def _dcp_erstellen(job_id):
-    import ftplib
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
@@ -280,11 +279,19 @@ def _dcp_erstellen(job_id):
         if r1.returncode != 0:
             raise RuntimeError(f"dcpomatic2_create: {(r1.stderr or r1.stdout)[:400]}")
 
-        proj_files = [f for f in os.listdir(tmp_dir) if f.endswith(".dcpomatic")]
-        if not proj_files:
+        # Projektfile rekursiv suchen - dcpomatic2_create legt es in Unterordner an
+        projekt_file = None
+        for root, _dirs, files in os.walk(tmp_dir):
+            for f in files:
+                if f.endswith(".dcpomatic"):
+                    projekt_file = os.path.join(root, f)
+                    break
+            if projekt_file:
+                break
+        if not projekt_file:
             raise RuntimeError("Kein .dcpomatic Projektfile gefunden")
-        projekt_file = os.path.join(tmp_dir, proj_files[0])
 
+        # DCP rendern
         r2 = subprocess.run(
             [cli_exe, projekt_file],
             capture_output=True, text=True, timeout=7200
@@ -292,14 +299,18 @@ def _dcp_erstellen(job_id):
         if r2.returncode != 0:
             raise RuntimeError(f"dcpomatic2_cli: {(r2.stderr or r2.stdout)[:400]}")
 
-        # Gerenderter DCP-Unterordner suchen
+        # Gerenderter DCP-Ordner: neben oder in gleichem Dir wie Projektfile
+        projekt_dir = os.path.dirname(projekt_file)
         dcp_subdir = None
-        for item in os.listdir(tmp_dir):
-            p = os.path.join(tmp_dir, item)
-            if os.path.isdir(p):
-                inhalte = os.listdir(p)
-                if any(f.lower().endswith((".mxf", ".xml", ".pkl")) for f in inhalte):
-                    dcp_subdir = p
+        for root, _dirs, files in os.walk(projekt_dir):
+            if any(f.lower().endswith((".mxf", ".xml")) for f in files):
+                dcp_subdir = root
+                break
+        if not dcp_subdir:
+            # Nochmal gesamtes tmp_dir durchsuchen
+            for root, _dirs, files in os.walk(tmp_dir):
+                if any(f.lower().endswith(".mxf") for f in files):
+                    dcp_subdir = root
                     break
 
         if not dcp_subdir:
@@ -338,25 +349,31 @@ def _upload_durchfuehren(job_id):
     user   = cfg["doremi"]["ftp_user"]
     passwd = cfg["doremi"]["ftp_pass"]
 
-    def _upload_dir(ftp, lok_pfad, ftp_pfad):
-        try:
-            ftp.mkd(ftp_pfad)
-        except ftplib.error_perm:
-            pass
+    def _upload_dir(ftp, lok_pfad):
         for eintrag in sorted(os.listdir(lok_pfad)):
             lok = os.path.join(lok_pfad, eintrag)
-            remote = f"{ftp_pfad}/{eintrag}"
             if os.path.isfile(lok):
                 with open(lok, "rb") as f:
-                    ftp.storbinary(f"STOR {remote}", f)
+                    ftp.storbinary(f"STOR {eintrag}", f)
             elif os.path.isdir(lok):
-                _upload_dir(ftp, lok, remote)
+                try:
+                    ftp.mkd(eintrag)
+                except ftplib.error_perm:
+                    pass
+                ftp.cwd(eintrag)
+                _upload_dir(ftp, lok)
+                ftp.cwd("..")
 
     with ftplib.FTP(timeout=60) as ftp:
         ftp.connect(ip, 21)
         ftp.login(user, passwd)
         ftp.set_pasv(True)
-        _upload_dir(ftp, dcp_pfad, dcp_name)
+        try:
+            ftp.mkd(dcp_name)
+        except ftplib.error_perm:
+            pass
+        ftp.cwd(dcp_name)
+        _upload_dir(ftp, dcp_pfad)
 
     # DCP-Ordner in Upload-Archiv verschieben
     dcp_archiv = cfg["ordner"]["dcp_archiv"]
@@ -716,7 +733,7 @@ def bearbeite_befehl(text):
         else:
             telegram_bot.sende_nachricht("Scan fortgesetzt.")
 
-    elif low == "/neustart":
+    elif low in ("/neustart", "/restart"):
         threading.Thread(target=neustart_service, daemon=True).start()
 
     elif low == "/hilfe":
@@ -738,7 +755,7 @@ def bearbeite_befehl(text):
             f"── Wartung ───────────────────\n"
             f"/jobs                Fehler & Retry\n"
             f"/pause               Scan pausieren\n"
-            f"/neustart            Service neu starten\n"
+            f"/neustart /restart   Service neu starten\n"
             f"{t}"
         )
 

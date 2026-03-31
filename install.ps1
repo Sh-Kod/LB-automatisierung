@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v2.8
+#   DCP AUTOMATISIERUNG - INSTALLER v2.9
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -20,7 +20,7 @@ $IS_UPDATE = ($LAUFWERK_PARAM -ne "")
 if (-not $IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.8" -ForegroundColor Cyan
+    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.9" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -191,7 +191,7 @@ Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
 Write-Host "[7/8] Erstelle Scripts und Konfiguration..." -ForegroundColor Green
 
-"2.8" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
+"2.9" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
 
 if ($IS_UPDATE -and $configBackup -ne "") {
     [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\config.yaml", $configBackup, $utf8NoBom)
@@ -414,10 +414,12 @@ def starte_listener(callback):
                 text = msg.get("text", "").strip()
                 if not text:
                     continue
-                # Routing: Dialog aktiv → Antwort an Dialog; sonst → Befehlshandler
+                # /Befehle immer zum Befehlshandler - auch waehrend Namens-Dialog
                 with _dialog_aktiv_lock:
                     dialog = _dialog_aktiv
-                if dialog:
+                if text.startswith("/") and callback:
+                    threading.Thread(target=callback, args=(text,), daemon=True).start()
+                elif dialog:
                     _dialog_antwort = text
                     _dialog_event.set()
                 elif callback:
@@ -1212,10 +1214,17 @@ def _dcp_erstellen(job_id):
         if r1.returncode != 0:
             raise RuntimeError(f"dcpomatic2_create: {(r1.stderr or r1.stdout)[:400]}")
 
-        proj_files = [f for f in os.listdir(tmp_dir) if f.endswith(".dcpomatic")]
-        if not proj_files:
+        # Projektfile rekursiv suchen - dcpomatic2_create legt es in Unterordner an
+        projekt_file = None
+        for root, _dirs, files in os.walk(tmp_dir):
+            for f in files:
+                if f.endswith(".dcpomatic"):
+                    projekt_file = os.path.join(root, f)
+                    break
+            if projekt_file:
+                break
+        if not projekt_file:
             raise RuntimeError("Kein .dcpomatic Projektfile gefunden")
-        projekt_file = os.path.join(tmp_dir, proj_files[0])
 
         r2 = subprocess.run(
             [cli_exe, projekt_file],
@@ -1224,13 +1233,16 @@ def _dcp_erstellen(job_id):
         if r2.returncode != 0:
             raise RuntimeError(f"dcpomatic2_cli: {(r2.stderr or r2.stdout)[:400]}")
 
+        projekt_dir = os.path.dirname(projekt_file)
         dcp_subdir = None
-        for item in os.listdir(tmp_dir):
-            p = os.path.join(tmp_dir, item)
-            if os.path.isdir(p):
-                inhalte = os.listdir(p)
-                if any(f.lower().endswith((".mxf", ".xml", ".pkl")) for f in inhalte):
-                    dcp_subdir = p
+        for root, _dirs, files in os.walk(projekt_dir):
+            if any(f.lower().endswith((".mxf", ".xml")) for f in files):
+                dcp_subdir = root
+                break
+        if not dcp_subdir:
+            for root, _dirs, files in os.walk(tmp_dir):
+                if any(f.lower().endswith(".mxf") for f in files):
+                    dcp_subdir = root
                     break
 
         if not dcp_subdir:
@@ -1268,25 +1280,31 @@ def _upload_durchfuehren(job_id):
     user   = cfg["doremi"]["ftp_user"]
     passwd = cfg["doremi"]["ftp_pass"]
 
-    def _upload_dir(ftp, lok_pfad, ftp_pfad):
-        try:
-            ftp.mkd(ftp_pfad)
-        except ftplib.error_perm:
-            pass
+    def _upload_dir(ftp, lok_pfad):
         for eintrag in sorted(os.listdir(lok_pfad)):
             lok = os.path.join(lok_pfad, eintrag)
-            remote = f"{ftp_pfad}/{eintrag}"
             if os.path.isfile(lok):
                 with open(lok, "rb") as f:
-                    ftp.storbinary(f"STOR {remote}", f)
+                    ftp.storbinary(f"STOR {eintrag}", f)
             elif os.path.isdir(lok):
-                _upload_dir(ftp, lok, remote)
+                try:
+                    ftp.mkd(eintrag)
+                except ftplib.error_perm:
+                    pass
+                ftp.cwd(eintrag)
+                _upload_dir(ftp, lok)
+                ftp.cwd("..")
 
     with ftplib.FTP(timeout=60) as ftp:
         ftp.connect(ip, 21)
         ftp.login(user, passwd)
         ftp.set_pasv(True)
-        _upload_dir(ftp, dcp_pfad, dcp_name)
+        try:
+            ftp.mkd(dcp_name)
+        except ftplib.error_perm:
+            pass
+        ftp.cwd(dcp_name)
+        _upload_dir(ftp, dcp_pfad)
 
     dcp_archiv = cfg["ordner"]["dcp_archiv"]
     os.makedirs(dcp_archiv, exist_ok=True)
@@ -1613,7 +1631,7 @@ def bearbeite_befehl(text):
         else:
             telegram_bot.sende_nachricht("Scan fortgesetzt.")
 
-    elif low == "/neustart":
+    elif low in ("/neustart", "/restart"):
         threading.Thread(target=neustart_service, daemon=True).start()
 
     elif low == "/hilfe":
@@ -1635,7 +1653,7 @@ def bearbeite_befehl(text):
             f"── Wartung ───────────────────\n"
             f"/jobs                Fehler & Retry\n"
             f"/pause               Scan pausieren\n"
-            f"/neustart            Service neu starten\n"
+            f"/neustart /restart   Service neu starten\n"
             f"{t}"
         )
 
@@ -1726,13 +1744,13 @@ $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 if ($IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.8" -ForegroundColor Green
+    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.9" -ForegroundColor Green
     Write-Host "   Dienst: $status" -ForegroundColor White
     Write-Host "  ============================================================" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.8" -ForegroundColor Green
+    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.9" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Laufwerk  : ${LAUFWERK}:\\" -ForegroundColor White
