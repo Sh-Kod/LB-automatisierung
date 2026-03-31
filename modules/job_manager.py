@@ -103,6 +103,15 @@ def markiere_fertig(job_id):
     if job_data:
         _melde_status(job_data, aktive_nach)
 
+def hole_job(job_id):
+    """Gibt Job-Dict fuer job_id zurueck, oder None."""
+    with _lock:
+        data = _lade()
+        for j in data["jobs"]:
+            if j["id"] == job_id:
+                return dict(j)
+    return None
+
 def hole_fehler():
     with _lock:
         data = _lade()
