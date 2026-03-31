@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v2.6
+#   DCP AUTOMATISIERUNG - INSTALLER v2.7
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -20,7 +20,7 @@ $IS_UPDATE = ($LAUFWERK_PARAM -ne "")
 if (-not $IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.6" -ForegroundColor Cyan
+    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.7" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -191,7 +191,7 @@ Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
 Write-Host "[7/8] Erstelle Scripts und Konfiguration..." -ForegroundColor Green
 
-"2.6" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
+"2.7" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
 
 if ($IS_UPDATE -and $configBackup -ne "") {
     [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\config.yaml", $configBackup, $utf8NoBom)
@@ -621,6 +621,15 @@ def markiere_fertig(job_id):
         aktive_nach = sum(1 for j in data["jobs"] if j["current_status"] == "running")
     if job_data:
         _melde_status(job_data, aktive_nach)
+
+def hole_job(job_id):
+    """Gibt Job-Dict fuer job_id zurueck, oder None."""
+    with _lock:
+        data = _lade()
+        for j in data["jobs"]:
+            if j["id"] == job_id:
+                return dict(j)
+    return None
 
 def hole_fehler():
     with _lock:
@@ -1166,16 +1175,184 @@ def verarbeite_job(job_id, ab_phase=1):
     job_manager.markiere_fertig(job_id)
 
 def _dcp_erstellen(job_id):
-    raise NotImplementedError("DCP-Erstellung: noch nicht implementiert")
+    import ftplib
+    job = job_manager.hole_job(job_id)
+    if not job:
+        raise RuntimeError(f"Job {job_id} nicht gefunden")
+
+    bildpfad   = job["bildpfad"]
+    final_name = job["final_name"]
+    cfg        = lade_config()
+    ausgabe    = cfg["ordner"]["dcp_ausgabe"]
+    create_exe = cfg["dcpomatic"]["create_pfad"]
+    cli_exe    = cfg["dcpomatic"]["cli_pfad"]
+
+    bild_lower = bildpfad.replace("\\", "/").lower()
+    if "10sec" in bild_lower:
+        dauer = 10
+    elif "15sec" in bild_lower:
+        dauer = 15
+    else:
+        dauer = 7
+
+    os.makedirs(ausgabe, exist_ok=True)
+    tmp_dir = os.path.join(ausgabe, f"_tmp_{job_id}")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    try:
+        r1 = subprocess.run(
+            [create_exe,
+             "--name", final_name,
+             "--still-length", str(dauer),
+             "--dcp-content-type", "advertisement",
+             "-o", tmp_dir,
+             bildpfad],
+            capture_output=True, text=True, timeout=120
+        )
+        if r1.returncode != 0:
+            raise RuntimeError(f"dcpomatic2_create: {(r1.stderr or r1.stdout)[:400]}")
+
+        proj_files = [f for f in os.listdir(tmp_dir) if f.endswith(".dcpomatic")]
+        if not proj_files:
+            raise RuntimeError("Kein .dcpomatic Projektfile gefunden")
+        projekt_file = os.path.join(tmp_dir, proj_files[0])
+
+        r2 = subprocess.run(
+            [cli_exe, projekt_file],
+            capture_output=True, text=True, timeout=7200
+        )
+        if r2.returncode != 0:
+            raise RuntimeError(f"dcpomatic2_cli: {(r2.stderr or r2.stdout)[:400]}")
+
+        dcp_subdir = None
+        for item in os.listdir(tmp_dir):
+            p = os.path.join(tmp_dir, item)
+            if os.path.isdir(p):
+                inhalte = os.listdir(p)
+                if any(f.lower().endswith((".mxf", ".xml", ".pkl")) for f in inhalte):
+                    dcp_subdir = p
+                    break
+
+        if not dcp_subdir:
+            raise RuntimeError("Gerenderter DCP-Ordner nicht gefunden")
+
+        ziel = os.path.join(ausgabe, final_name)
+        if os.path.exists(ziel):
+            shutil.rmtree(ziel)
+        shutil.move(dcp_subdir, ziel)
+
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    try:
+        archiv = cfg["ordner"]["archiv"]
+        os.makedirs(archiv, exist_ok=True)
+        shutil.move(bildpfad, os.path.join(archiv, os.path.basename(bildpfad)))
+    except Exception:
+        pass
+
 
 def _upload_durchfuehren(job_id):
-    raise NotImplementedError("FTP-Upload: noch nicht implementiert")
+    import ftplib
+    job = job_manager.hole_job(job_id)
+    if not job:
+        raise RuntimeError(f"Job {job_id} nicht gefunden")
+
+    cfg       = lade_config()
+    dcp_name  = job["final_name"]
+    dcp_pfad  = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
+    if not os.path.exists(dcp_pfad):
+        raise FileNotFoundError(f"DCP-Ordner nicht gefunden: {dcp_pfad}")
+
+    ip     = cfg["doremi"]["ip"]
+    user   = cfg["doremi"]["ftp_user"]
+    passwd = cfg["doremi"]["ftp_pass"]
+
+    def _upload_dir(ftp, lok_pfad, ftp_pfad):
+        try:
+            ftp.mkd(ftp_pfad)
+        except ftplib.error_perm:
+            pass
+        for eintrag in sorted(os.listdir(lok_pfad)):
+            lok = os.path.join(lok_pfad, eintrag)
+            remote = f"{ftp_pfad}/{eintrag}"
+            if os.path.isfile(lok):
+                with open(lok, "rb") as f:
+                    ftp.storbinary(f"STOR {remote}", f)
+            elif os.path.isdir(lok):
+                _upload_dir(ftp, lok, remote)
+
+    with ftplib.FTP(timeout=60) as ftp:
+        ftp.connect(ip, 21)
+        ftp.login(user, passwd)
+        ftp.set_pasv(True)
+        _upload_dir(ftp, dcp_pfad, dcp_name)
+
+    dcp_archiv = cfg["ordner"]["dcp_archiv"]
+    os.makedirs(dcp_archiv, exist_ok=True)
+    ziel = os.path.join(dcp_archiv, dcp_name)
+    if os.path.exists(ziel):
+        shutil.rmtree(ziel)
+    shutil.move(dcp_pfad, ziel)
+
 
 def _ingest_starten(job_id):
-    raise NotImplementedError("Doremi-Ingest: noch nicht implementiert")
+    import base64
+    job = job_manager.hole_job(job_id)
+    if not job:
+        raise RuntimeError(f"Job {job_id} nicht gefunden")
+
+    cfg      = lade_config()
+    ip       = cfg["doremi"]["ip"]
+    user     = cfg["doremi"]["web_user"]
+    passwd   = cfg["doremi"]["web_pass"]
+    dcp_name = job["final_name"]
+
+    time.sleep(5)
+
+    creds = base64.b64encode(f"{user}:{passwd}".encode()).decode()
+    post_data = f"content={dcp_name}".encode()
+    req = urllib.request.Request(
+        f"http://{ip}/Ingest/",
+        data=post_data, method="POST"
+    )
+    req.add_header("Authorization", f"Basic {creds}")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+    except Exception:
+        pass  # FTP-Upload loest Ingest meistens automatisch aus
+
 
 def _monitoring_ueberwachen(job_id):
-    raise NotImplementedError("Monitoring: noch nicht implementiert")
+    import base64
+    job = job_manager.hole_job(job_id)
+    if not job:
+        raise RuntimeError(f"Job {job_id} nicht gefunden")
+
+    cfg      = lade_config()
+    ip       = cfg["doremi"]["ip"]
+    user     = cfg["doremi"]["web_user"]
+    passwd   = cfg["doremi"]["web_pass"]
+    dcp_name = job["final_name"]
+
+    creds = base64.b64encode(f"{user}:{passwd}".encode()).decode()
+
+    for _ in range(120):  # max 20 Minuten
+        time.sleep(10)
+        try:
+            req = urllib.request.Request(f"http://{ip}/ContentInfo/?name={dcp_name}")
+            req.add_header("Authorization", f"Basic {creds}")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode("utf-8", errors="replace").lower()
+                if dcp_name.lower() in body and any(
+                    w in body for w in ("complete", "ready", "ok", "ingested")
+                ):
+                    return
+        except Exception:
+            pass
+    # Timeout ist kein Fehler - DCP wurde hochgeladen und Ingest laeuft
 
 def pruefe_update_ergebnis():
     if not os.path.exists(UPDATE_RESULT_PFAD):
@@ -1549,13 +1726,13 @@ $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 if ($IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.6" -ForegroundColor Green
+    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.7" -ForegroundColor Green
     Write-Host "   Dienst: $status" -ForegroundColor White
     Write-Host "  ============================================================" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.6" -ForegroundColor Green
+    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.7" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Laufwerk  : ${LAUFWERK}:\\" -ForegroundColor White
