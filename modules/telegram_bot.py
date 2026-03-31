@@ -98,10 +98,12 @@ def starte_listener(callback):
                 text = msg.get("text", "").strip()
                 if not text:
                     continue
-                # Routing: Dialog aktiv → Antwort an Dialog; sonst → Befehlshandler
+                # /Befehle immer zum Befehlshandler - auch waehrend Namens-Dialog
                 with _dialog_aktiv_lock:
                     dialog = _dialog_aktiv
-                if dialog:
+                if text.startswith("/") and callback:
+                    threading.Thread(target=callback, args=(text,), daemon=True).start()
+                elif dialog:
                     _dialog_antwort = text
                     _dialog_event.set()
                 elif callback:
