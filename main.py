@@ -279,39 +279,50 @@ def _dcp_erstellen(job_id):
         if r1.returncode != 0:
             raise RuntimeError(f"dcpomatic2_create: {(r1.stderr or r1.stdout)[:400]}")
 
-        # Projektfile rekursiv suchen - dcpomatic2_create legt es in Unterordner an
-        projekt_file = None
-        for root, _dirs, files in os.walk(tmp_dir):
-            for f in files:
-                if f.endswith(".dcpomatic"):
-                    projekt_file = os.path.join(root, f)
+        # Projekt suchen: In DCP-o-matic 2.x ist das Projekt ein VERZEICHNIS
+        # mit .dcpomatic Endung (nicht eine Datei).
+        # Fallback: tmp_dir selbst ist das Projekt (wenn -o direkt das Film-Dir setzt)
+        projekt_pfad = None
+        for root, dirs, files in os.walk(tmp_dir):
+            for d in dirs:
+                if d.endswith(".dcpomatic"):
+                    projekt_pfad = os.path.join(root, d)
                     break
-            if projekt_file:
+            if not projekt_pfad:
+                for f in files:
+                    if f.endswith(".dcpomatic"):
+                        projekt_pfad = os.path.join(root, f)
+                        break
+            if projekt_pfad:
                 break
-        if not projekt_file:
-            raise RuntimeError("Kein .dcpomatic Projektfile gefunden")
+        if not projekt_pfad and os.path.exists(os.path.join(tmp_dir, "metadata.xml")):
+            projekt_pfad = tmp_dir
+        if not projekt_pfad:
+            inhalt = str(os.listdir(tmp_dir))
+            raise RuntimeError(f"Kein .dcpomatic Projekt gefunden. tmp_dir: {inhalt}")
 
-        # DCP rendern
+        # DCP rendern - Output explizit angeben
+        render_dir = os.path.join(tmp_dir, "_render")
+        os.makedirs(render_dir, exist_ok=True)
         r2 = subprocess.run(
-            [cli_exe, projekt_file],
+            [cli_exe, "-o", render_dir, projekt_pfad],
             capture_output=True, text=True, timeout=7200
         )
         if r2.returncode != 0:
+            # Fallback: ohne -o (falls dcpomatic2_cli kein -o unterstuetzt)
+            r2 = subprocess.run(
+                [cli_exe, projekt_pfad],
+                capture_output=True, text=True, timeout=7200
+            )
+        if r2.returncode != 0:
             raise RuntimeError(f"dcpomatic2_cli: {(r2.stderr or r2.stdout)[:400]}")
 
-        # Gerenderter DCP-Ordner: neben oder in gleichem Dir wie Projektfile
-        projekt_dir = os.path.dirname(projekt_file)
+        # Gerenderter DCP-Ordner suchen (enthaelt .mxf Dateien)
         dcp_subdir = None
-        for root, _dirs, files in os.walk(projekt_dir):
-            if any(f.lower().endswith((".mxf", ".xml")) for f in files):
+        for root, _dirs, files in os.walk(tmp_dir):
+            if any(f.lower().endswith(".mxf") for f in files):
                 dcp_subdir = root
                 break
-        if not dcp_subdir:
-            # Nochmal gesamtes tmp_dir durchsuchen
-            for root, _dirs, files in os.walk(tmp_dir):
-                if any(f.lower().endswith(".mxf") for f in files):
-                    dcp_subdir = root
-                    break
 
         if not dcp_subdir:
             raise RuntimeError("Gerenderter DCP-Ordner nicht gefunden")
