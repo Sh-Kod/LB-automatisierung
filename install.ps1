@@ -1204,7 +1204,7 @@ def _dcp_erstellen(job_id):
             [create_exe,
              "--name", final_name,
              "--still-length", str(dauer),
-             "--dcp-content-type", "advertisement",
+             "--dcp-content-type", "ADV",
              "-o", tmp_dir,
              bildpfad],
             capture_output=True, text=True, timeout=120
