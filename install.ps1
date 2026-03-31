@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v2.13
+#   DCP AUTOMATISIERUNG - INSTALLER v2.14
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -20,7 +20,7 @@ $IS_UPDATE = ($LAUFWERK_PARAM -ne "")
 if (-not $IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.13" -ForegroundColor Cyan
+    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.14" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -191,7 +191,7 @@ Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
 Write-Host "[7/8] Erstelle Scripts und Konfiguration..." -ForegroundColor Green
 
-"2.13" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
+"2.14" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
 
 if ($IS_UPDATE -and $configBackup -ne "") {
     [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\config.yaml", $configBackup, $utf8NoBom)
@@ -1155,23 +1155,25 @@ def queue_worker():
             telegram_bot.beende_dialog()
             time.sleep(1)
 
-_PHASE_NAMEN = {
-    1: ("DCP wird erstellt...", "DCP erstellt"),
-    2: ("Upload zum Doremi...", "Upload abgeschlossen"),
-    3: ("Ingest wird gestartet...", "Ingest gestartet"),
-    4: ("Ingest wird überwacht...", "Ingest abgeschlossen"),
+_PHASE_MELDUNGEN = {
+    1: "✓ DCP erstellt",
+    2: "✓ Hochgeladen",
+    3: "✓ Ingest gestartet",
 }
+
+def _ist_solo():
+    """True wenn nur dieser eine Job gerade aktiv ist (kein Batch)."""
+    return len(job_manager.hole_aktive()) <= 1
 
 def _phase_ausfuehren(job_id, phase, fn):
     job = job_manager.hole_job(job_id)
-    name = (job.get("final_name") or "?")[:30] if job else "?"
-    start_msg, done_msg = _PHASE_NAMEN.get(phase, (f"Phase {phase}...", f"Phase {phase} fertig"))
-    telegram_bot.sende_nachricht(f"[{name}]\n{start_msg}")
+    name = (job.get("final_name") or "?") if job else "?"
     try:
         job_manager.aktualisiere_phase(job_id, phase, "running")
         fn(job_id)
         job_manager.aktualisiere_phase(job_id, phase, "done")
-        telegram_bot.sende_nachricht(f"[{name}]\n{done_msg}")
+        if _ist_solo() and phase in _PHASE_MELDUNGEN:
+            telegram_bot.sende_nachricht(f"{_PHASE_MELDUNGEN[phase]}\n{name}")
         return True
     except Exception as e:
         job_manager.markiere_fehler(job_id, phase, str(e), retryable=True)
@@ -1376,8 +1378,8 @@ def _monitoring_ueberwachen(job_id):
 
     creds = base64.b64encode(f"{user}:{passwd}".encode()).decode()
 
-    for _ in range(120):  # max 20 Minuten
-        time.sleep(10)
+    for _ in range(36):  # max 3 Minuten (36 × 5s)
+        time.sleep(5)
         try:
             req = urllib.request.Request(f"http://{ip}/ContentInfo/?name={dcp_name}")
             req.add_header("Authorization", f"Basic {creds}")
@@ -1763,13 +1765,13 @@ $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 if ($IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.13" -ForegroundColor Green
+    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.14" -ForegroundColor Green
     Write-Host "   Dienst: $status" -ForegroundColor White
     Write-Host "  ============================================================" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.13" -ForegroundColor Green
+    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.14" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Laufwerk  : ${LAUFWERK}:\\" -ForegroundColor White
