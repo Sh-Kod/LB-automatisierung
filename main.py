@@ -216,11 +216,23 @@ def queue_worker():
 # Job-Pipeline
 # ──────────────────────────────────────────────
 
+_PHASE_NAMEN = {
+    1: ("DCP wird erstellt...", "DCP erstellt"),
+    2: ("Upload zum Doremi...", "Upload abgeschlossen"),
+    3: ("Ingest wird gestartet...", "Ingest gestartet"),
+    4: ("Ingest wird überwacht...", "Ingest abgeschlossen"),
+}
+
 def _phase_ausfuehren(job_id, phase, fn):
+    job = job_manager.hole_job(job_id)
+    name = (job.get("final_name") or "?")[:30] if job else "?"
+    start_msg, done_msg = _PHASE_NAMEN.get(phase, (f"Phase {phase}...", f"Phase {phase} fertig"))
+    telegram_bot.sende_nachricht(f"[{name}]\n{start_msg}")
     try:
         job_manager.aktualisiere_phase(job_id, phase, "running")
         fn(job_id)
         job_manager.aktualisiere_phase(job_id, phase, "done")
+        telegram_bot.sende_nachricht(f"[{name}]\n{done_msg}")
         return True
     except Exception as e:
         job_manager.markiere_fehler(job_id, phase, str(e), retryable=True)

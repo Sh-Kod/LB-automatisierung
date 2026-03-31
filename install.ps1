@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v2.11
+#   DCP AUTOMATISIERUNG - INSTALLER v2.12
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -20,7 +20,7 @@ $IS_UPDATE = ($LAUFWERK_PARAM -ne "")
 if (-not $IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.11" -ForegroundColor Cyan
+    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.12" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -1155,11 +1155,23 @@ def queue_worker():
             telegram_bot.beende_dialog()
             time.sleep(1)
 
+_PHASE_NAMEN = {
+    1: ("DCP wird erstellt...", "DCP erstellt"),
+    2: ("Upload zum Doremi...", "Upload abgeschlossen"),
+    3: ("Ingest wird gestartet...", "Ingest gestartet"),
+    4: ("Ingest wird überwacht...", "Ingest abgeschlossen"),
+}
+
 def _phase_ausfuehren(job_id, phase, fn):
+    job = job_manager.hole_job(job_id)
+    name = (job.get("final_name") or "?")[:30] if job else "?"
+    start_msg, done_msg = _PHASE_NAMEN.get(phase, (f"Phase {phase}...", f"Phase {phase} fertig"))
+    telegram_bot.sende_nachricht(f"[{name}]\n{start_msg}")
     try:
         job_manager.aktualisiere_phase(job_id, phase, "running")
         fn(job_id)
         job_manager.aktualisiere_phase(job_id, phase, "done")
+        telegram_bot.sende_nachricht(f"[{name}]\n{done_msg}")
         return True
     except Exception as e:
         job_manager.markiere_fehler(job_id, phase, str(e), retryable=True)
@@ -1748,13 +1760,13 @@ $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 if ($IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.11" -ForegroundColor Green
+    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.12" -ForegroundColor Green
     Write-Host "   Dienst: $status" -ForegroundColor White
     Write-Host "  ============================================================" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.11" -ForegroundColor Green
+    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.12" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Laufwerk  : ${LAUFWERK}:\\" -ForegroundColor White
