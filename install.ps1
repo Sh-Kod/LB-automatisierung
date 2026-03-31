@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v2.5
+#   DCP AUTOMATISIERUNG - INSTALLER v2.6
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -20,7 +20,7 @@ $IS_UPDATE = ($LAUFWERK_PARAM -ne "")
 if (-not $IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.5" -ForegroundColor Cyan
+    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.6" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -191,7 +191,7 @@ Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
 Write-Host "[7/8] Erstelle Scripts und Konfiguration..." -ForegroundColor Green
 
-"2.5" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
+"2.6" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
 
 if ($IS_UPDATE -and $configBackup -ne "") {
     [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\config.yaml", $configBackup, $utf8NoBom)
@@ -935,6 +935,16 @@ def main():
     log(f"Update auf v{neue_version} erfolgreich abgeschlossen!")
 
     starte_service()
+
+    # Task Scheduler Aufgabe aufraeumen
+    try:
+        subprocess.Popen(
+            ["schtasks", "/delete", "/f", "/tn", "DCP_Automatisierung_Updater"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    except Exception:
+        pass
+
     log("Updater beendet.")
 
 
@@ -1226,10 +1236,27 @@ def pruefe_update():
             json.dump(pending, f, ensure_ascii=False, indent=2)
         os.replace(tmp, PENDING_UPDATE_PFAD)
         telegram_bot.sende_nachricht(
-            "Dateien geladen und validiert.\nUpdate wird jetzt installiert (Service-Neustart)..."
+            f"Dateien geladen und validiert.\n"
+            f"Update wird jetzt installiert (Service-Neustart)..."
         )
         import sys
-        subprocess.Popen([sys.executable, UPDATER_PFAD], creationflags=subprocess.CREATE_NEW_CONSOLE)
+        from datetime import timedelta
+        # Task Scheduler: updater.py ausserhalb des Service-Prozessbaums starten.
+        # Direkte subprocess.Popen wuerde durch NSSM AppKillProcessTree getoetet.
+        start_time = (datetime.now() + timedelta(minutes=2)).strftime("%H:%M")
+        r1 = subprocess.run([
+            "schtasks", "/create", "/f",
+            "/tn", "DCP_Automatisierung_Updater",
+            "/tr", f'"{sys.executable}" "{UPDATER_PFAD}"',
+            "/sc", "once", "/st", start_time, "/ru", "SYSTEM"
+        ], capture_output=True, text=True)
+        if r1.returncode != 0:
+            raise RuntimeError(f"Task erstellen fehlgeschlagen: {r1.stderr.strip()}")
+        r2 = subprocess.run([
+            "schtasks", "/run", "/tn", "DCP_Automatisierung_Updater"
+        ], capture_output=True, text=True)
+        if r2.returncode != 0:
+            raise RuntimeError(f"Task starten fehlgeschlagen: {r2.stderr.strip()}")
     except Exception as e:
         telegram_bot.sende_nachricht(f"Update fehlgeschlagen: {e}")
         try:
@@ -1522,13 +1549,13 @@ $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 if ($IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.5" -ForegroundColor Green
+    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.6" -ForegroundColor Green
     Write-Host "   Dienst: $status" -ForegroundColor White
     Write-Host "  ============================================================" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.5" -ForegroundColor Green
+    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.6" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Laufwerk  : ${LAUFWERK}:\\" -ForegroundColor White
