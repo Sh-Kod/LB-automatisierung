@@ -301,19 +301,11 @@ def _dcp_erstellen(job_id):
             inhalt = str(os.listdir(tmp_dir))
             raise RuntimeError(f"Kein .dcpomatic Projekt gefunden. tmp_dir: {inhalt}")
 
-        # DCP rendern - Output explizit angeben
-        render_dir = os.path.join(tmp_dir, "_render")
-        os.makedirs(render_dir, exist_ok=True)
+        # DCP rendern - dcpomatic2_cli hat kein -o Flag, nimmt nur <FILM>
         r2 = subprocess.run(
-            [cli_exe, "-o", render_dir, projekt_pfad],
+            [cli_exe, projekt_pfad],
             capture_output=True, text=True, timeout=7200
         )
-        if r2.returncode != 0:
-            # Fallback: ohne -o (falls dcpomatic2_cli kein -o unterstuetzt)
-            r2 = subprocess.run(
-                [cli_exe, projekt_pfad],
-                capture_output=True, text=True, timeout=7200
-            )
         if r2.returncode != 0:
             raise RuntimeError(f"dcpomatic2_cli: {(r2.stderr or r2.stdout)[:400]}")
 

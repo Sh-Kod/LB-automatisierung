@@ -1,5 +1,5 @@
 # ============================================================
-#   DCP AUTOMATISIERUNG - INSTALLER v2.10
+#   DCP AUTOMATISIERUNG - INSTALLER v2.11
 #   Ausfuehren mit:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # ============================================================
@@ -20,7 +20,7 @@ $IS_UPDATE = ($LAUFWERK_PARAM -ne "")
 if (-not $IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.10" -ForegroundColor Cyan
+    Write-Host "   DCP AUTOMATISIERUNG - INSTALLER v2.11" -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -191,7 +191,7 @@ Write-Host "      Alle Ordner erstellt - OK" -ForegroundColor Gray
 
 Write-Host "[7/8] Erstelle Scripts und Konfiguration..." -ForegroundColor Green
 
-"2.10" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
+"2.11" | ForEach-Object { [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\version.txt", $_, $utf8NoBom) }
 
 if ($IS_UPDATE -and $configBackup -ne "") {
     [System.IO.File]::WriteAllText("C:\\dcp_automatisierung\\config.yaml", $configBackup, $utf8NoBom)
@@ -1235,17 +1235,11 @@ def _dcp_erstellen(job_id):
             inhalt = str(os.listdir(tmp_dir))
             raise RuntimeError(f"Kein .dcpomatic Projekt gefunden. tmp_dir: {inhalt}")
 
-        render_dir = os.path.join(tmp_dir, "_render")
-        os.makedirs(render_dir, exist_ok=True)
+        # DCP rendern - dcpomatic2_cli hat kein -o Flag, nimmt nur <FILM>
         r2 = subprocess.run(
-            [cli_exe, "-o", render_dir, projekt_pfad],
+            [cli_exe, projekt_pfad],
             capture_output=True, text=True, timeout=7200
         )
-        if r2.returncode != 0:
-            r2 = subprocess.run(
-                [cli_exe, projekt_pfad],
-                capture_output=True, text=True, timeout=7200
-            )
         if r2.returncode != 0:
             raise RuntimeError(f"dcpomatic2_cli: {(r2.stderr or r2.stdout)[:400]}")
 
@@ -1754,13 +1748,13 @@ $status = if ($svc) { $svc.Status } else { "Nicht gefunden" }
 if ($IS_UPDATE) {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.10" -ForegroundColor Green
+    Write-Host "   AUTO-UPDATE ABGESCHLOSSEN! v2.11" -ForegroundColor Green
     Write-Host "   Dienst: $status" -ForegroundColor White
     Write-Host "  ============================================================" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Green
-    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.10" -ForegroundColor Green
+    Write-Host "   INSTALLATION ABGESCHLOSSEN! v2.11" -ForegroundColor Green
     Write-Host "  ============================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Laufwerk  : ${LAUFWERK}:\\" -ForegroundColor White
