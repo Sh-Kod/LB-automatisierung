@@ -777,16 +777,21 @@ def schreibe_result(erfolg, neue_version="", fehler=""):
 def stoppe_service():
     log("Stoppe Service...")
     try:
-        subprocess.run([NSSM, "stop", SERVICE], capture_output=True, timeout=30)
+        proc = subprocess.Popen(
+            [NSSM, "stop", SERVICE],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        proc.wait(timeout=30)
     except Exception as e:
-        log(f"Fehler beim Stoppen: {e}")
+        log(f"nssm stop Fehler: {e}")
     for _ in range(20):
         time.sleep(2)
         try:
-            r = subprocess.run([NSSM, "status", SERVICE],
-                               capture_output=True, text=True, timeout=10)
-            out = r.stdout + r.stderr
-            if "SERVICE_STOPPED" in out:
+            r = subprocess.run(
+                ["sc", "query", SERVICE],
+                capture_output=True, text=True, timeout=10
+            )
+            if "STOPPED" in r.stdout:
                 log("Service gestoppt.")
                 return True
         except Exception:
@@ -798,11 +803,15 @@ def stoppe_service():
 def starte_service():
     log("Starte Service...")
     try:
-        subprocess.run([NSSM, "start", SERVICE], capture_output=True, timeout=30)
+        proc = subprocess.Popen(
+            [NSSM, "start", SERVICE],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        proc.wait(timeout=30)
         time.sleep(3)
         log("Service gestartet.")
     except Exception as e:
-        log(f"Fehler beim Starten: {e}")
+        log(f"nssm start Fehler: {e}")
 
 
 def erstelle_backup(dateien, backup_dir):
@@ -1474,7 +1483,18 @@ foreach ($file in Get-ChildItem "C:\\dcp_automatisierung" -Recurse -Include *.py
 
 Write-Host "[8/8] Installiere Python-Pakete..." -ForegroundColor Green
 Set-Location "C:\\dcp_automatisierung"
-$pythonExe = (Get-Command python).Source
+
+# Echtes Python finden (Windows Store Stub ignorieren)
+$pythonExe = ""
+try {
+    $pythonExe = (where.exe python 2>$null) |
+        Where-Object { $_ -notmatch "WindowsApps" -and $_ -match "python\.exe$" } |
+        Select-Object -First 1
+} catch {}
+if (-not $pythonExe) {
+    $pythonExe = (Get-Command python).Source
+}
+Write-Host "      Python: $pythonExe" -ForegroundColor Gray
 & "$pythonExe" -m pip install --upgrade pip -q
 & "$pythonExe" -m pip install requests pillow pytesseract pyyaml schedule selenium webdriver-manager -q
 Write-Host "      Alle Pakete installiert - OK" -ForegroundColor Gray
