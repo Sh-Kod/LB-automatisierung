@@ -1,3 +1,5 @@
+import io
+import os
 import requests
 import yaml
 import time
@@ -27,14 +29,37 @@ def sende_nachricht(text):
         print(f"Telegram Fehler: {e}")
 
 def sende_bild(bildpfad, caption=""):
+    """Sendet ein Bild an Telegram. Verkleinert automatisch wenn > 5 MB oder > 2560 px."""
     try:
+        from PIL import Image
         config = lade_config()
         token = config["telegram"]["token"]
         chat_id = config["telegram"]["chat_id"]
         url = f"https://api.telegram.org/bot{token}/sendPhoto"
-        with open(bildpfad, "rb") as f:
+
+        # Bild bei Bedarf verkleinern (Telegram-Limit: 10 MB, praktisch sicher < 5 MB)
+        MAX_BYTES = 5 * 1024 * 1024
+        MAX_PX    = 2560
+
+        dateigrösse = os.path.getsize(bildpfad)
+        img = Image.open(bildpfad)
+        w, h = img.size
+        muss_verkleinern = dateigrösse > MAX_BYTES or w > MAX_PX or h > MAX_PX
+
+        if muss_verkleinern:
+            faktor = min(MAX_PX / w, MAX_PX / h, 1.0)
+            neues_w = int(w * faktor)
+            neues_h = int(h * faktor)
+            img = img.resize((neues_w, neues_h), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            buf.seek(0)
             requests.post(url, data={"chat_id": chat_id, "caption": caption},
-                          files={"photo": f}, timeout=30)
+                          files={"photo": ("bild.jpg", buf, "image/jpeg")}, timeout=30)
+        else:
+            with open(bildpfad, "rb") as f:
+                requests.post(url, data={"chat_id": chat_id, "caption": caption},
+                              files={"photo": f}, timeout=30)
     except Exception as e:
         print(f"Telegram Bild Fehler: {e}")
 
