@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import py_compile
@@ -6,6 +7,7 @@ import shutil
 import subprocess
 import threading
 import time
+import unicodedata
 import urllib.request
 from datetime import datetime
 
@@ -257,6 +259,23 @@ def verarbeite_job(job_id, ab_phase=1):
             return
     job_manager.markiere_fertig(job_id)
 
+def _bereinige_pfad_fuer_dcp(bildpfad):
+    """Kopiert Bild in temp-Ordner mit reinem ASCII-Dateinamen.
+    Behebt den dcpomatic2 'codecvt to wstring: error [codecvt:2]' bei Sonderzeichen."""
+    temp_dir = r"C:\dcp_automatisierung\temp"
+    os.makedirs(temp_dir, exist_ok=True)
+    ext = os.path.splitext(bildpfad)[1].lower()
+    basename = os.path.splitext(os.path.basename(bildpfad))[0]
+    # Umlaute + Sonderzeichen → ASCII
+    ascii_name = unicodedata.normalize("NFKD", basename).encode("ascii", "ignore").decode("ascii")
+    ascii_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", ascii_name).strip("_")
+    if not ascii_name:
+        ascii_name = "bild"
+    ziel = os.path.join(temp_dir, ascii_name + ext)
+    shutil.copy2(bildpfad, ziel)
+    return ziel
+
+
 def _dcp_erstellen(job_id):
     job = job_manager.hole_job(job_id)
     if not job:
@@ -282,6 +301,9 @@ def _dcp_erstellen(job_id):
     tmp_dir = os.path.join(ausgabe, f"_tmp_{job_id}")
     os.makedirs(tmp_dir, exist_ok=True)
 
+    # ASCII-Kopie erstellen – verhindert codecvt-Fehler bei Sonderzeichen im Pfad
+    ascii_bildpfad = _bereinige_pfad_fuer_dcp(bildpfad)
+
     try:
         r1 = subprocess.run(
             [create_exe,
@@ -292,7 +314,7 @@ def _dcp_erstellen(job_id):
              "--twok",
              "--j2k-bandwidth", "100",
              "-o", tmp_dir,
-             bildpfad],
+             ascii_bildpfad],   # ASCII-Pfad statt Original
             capture_output=True, text=True, timeout=120
         )
         if r1.returncode != 0:
@@ -300,7 +322,6 @@ def _dcp_erstellen(job_id):
 
         # Projekt suchen: In DCP-o-matic 2.x ist das Projekt ein VERZEICHNIS
         # mit .dcpomatic Endung (nicht eine Datei).
-        # Fallback: tmp_dir selbst ist das Projekt (wenn -o direkt das Film-Dir setzt)
         projekt_pfad = None
         for root, dirs, files in os.walk(tmp_dir):
             for d in dirs:
@@ -345,6 +366,11 @@ def _dcp_erstellen(job_id):
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+        # ASCII-Kopie aufräumen
+        try:
+            os.remove(ascii_bildpfad)
+        except Exception:
+            pass
 
     # Originalbild ins Archiv verschieben
     try:
@@ -390,6 +416,8 @@ def _upload_durchfuehren(job_id):
         ftp.connect(ip, 21)
         ftp.login(user, passwd)
         ftp.set_pasv(True)
+        # Doremi scannt nur /gui – DCP muss dort abgelegt werden
+        ftp.cwd("/gui")
         try:
             ftp.mkd(dcp_name)
         except ftplib.error_perm:
@@ -406,8 +434,42 @@ def _upload_durchfuehren(job_id):
     shutil.move(dcp_pfad, ziel)
 
 
+def _erstelle_selenium_driver():
+    """Erstellt einen Chrome-Headless-Treiber via webdriver_manager."""
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+
+    opts = Options()
+    opts.add_argument("--headless")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--log-level=3")
+    return webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=opts
+    )
+
+
+def _doremi_login(driver, ip, user, passwd):
+    """Setzt HTTP-Basic-Auth-Header via Chrome DevTools Protocol und öffnet die Doremi-Seite."""
+    auth_header = "Basic " + base64.b64encode(f"{user}:{passwd}".encode()).decode()
+    driver.execute_cdp_cmd("Network.enable", {})
+    driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {
+        "headers": {"Authorization": auth_header}
+    })
+    driver.get(f"http://{ip}/web/")
+    time.sleep(2)
+
+
 def _ingest_starten(job_id):
-    import base64
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait, Select
+    from selenium.webdriver.support import expected_conditions as EC
+
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
@@ -418,26 +480,58 @@ def _ingest_starten(job_id):
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
-    time.sleep(5)  # FTP-Transfer sicher abgeschlossen
+    time.sleep(5)  # sicherstellen, dass FTP fertig ist
 
-    # Doremi TMS Ingest via HTTP
-    creds = base64.b64encode(f"{user}:{passwd}".encode()).decode()
-    post_data = f"content={dcp_name}".encode()
-    req = urllib.request.Request(
-        f"http://{ip}/Ingest/",
-        data=post_data, method="POST"
-    )
-    req.add_header("Authorization", f"Basic {creds}")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    driver = _erstelle_selenium_driver()
     try:
-        with urllib.request.urlopen(req, timeout=30):
-            pass
-    except Exception:
-        pass  # FTP-Upload loest Ingest meistens automatisch aus
+        _doremi_login(driver, ip, user, passwd)
+
+        # Zur Ingest-Scan-Seite navigieren
+        driver.get(
+            f"http://{ip}/web/sys_control/index.php"
+            "?page=ingest_manager/ingest_scan.php"
+        )
+        wait = WebDriverWait(driver, 30)
+
+        # "Local Storage" aus Dropdown wählen
+        try:
+            dropdown_el = wait.until(
+                EC.presence_of_element_located((By.TAG_NAME, "select"))
+            )
+            sel = Select(dropdown_el)
+            sel.select_by_visible_text("Local Storage")
+            time.sleep(3)
+        except Exception:
+            pass  # Dropdown möglicherweise nicht vorhanden oder schon korrekt gesetzt
+
+        # DCP in der Tabelle suchen und Ingest-Button klicken
+        rows = driver.find_elements(By.TAG_NAME, "tr")
+        gefunden = False
+        for row in rows:
+            if dcp_name.lower() in row.text.lower():
+                # Button oder Input in der Zeile klicken
+                btns = row.find_elements(By.TAG_NAME, "button")
+                if not btns:
+                    btns = row.find_elements(
+                        By.CSS_SELECTOR, "input[type='submit'], input[type='button']"
+                    )
+                if btns:
+                    btns[0].click()
+                    gefunden = True
+                    break
+        if not gefunden:
+            raise RuntimeError(
+                f"DCP '{dcp_name}' nicht in Ingest-Liste gefunden. "
+                f"Ist der FTP-Upload nach /gui abgeschlossen?"
+            )
+        time.sleep(2)
+    finally:
+        driver.quit()
 
 
 def _monitoring_ueberwachen(job_id):
-    import base64
+    from selenium.webdriver.common.by import By
+
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
@@ -448,22 +542,47 @@ def _monitoring_ueberwachen(job_id):
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
-    creds = base64.b64encode(f"{user}:{passwd}".encode()).decode()
+    driver = _erstelle_selenium_driver()
+    try:
+        _doremi_login(driver, ip, user, passwd)
 
-    for _ in range(36):  # max 3 Minuten (36 × 5s)
-        time.sleep(5)
-        try:
-            req = urllib.request.Request(f"http://{ip}/ContentInfo/?name={dcp_name}")
-            req.add_header("Authorization", f"Basic {creds}")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                body = resp.read().decode("utf-8", errors="replace").lower()
-                if dcp_name.lower() in body and any(
-                    w in body for w in ("complete", "ready", "ok", "ingested")
-                ):
+        driver.get(
+            f"http://{ip}/web/sys_control/index.php"
+            "?page=ingest_manager/ingest_monitor.php"
+        )
+
+        # Polling – max. 10 Minuten (120 × 5s)
+        for _ in range(120):
+            time.sleep(5)
+            try:
+                driver.refresh()
+                page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+
+                # Nicht mehr in der Liste → Ingest abgeschlossen
+                if dcp_name.lower() not in page_text:
                     return
-        except Exception:
-            pass
-    # Timeout ist kein Fehler - DCP wurde hochgeladen und Ingest laeuft
+
+                # Zeile mit dem DCP suchen und Status prüfen
+                rows = driver.find_elements(By.TAG_NAME, "tr")
+                for row in rows:
+                    if dcp_name.lower() in row.text.lower():
+                        row_text = row.text.lower()
+                        row_html = row.get_attribute("innerHTML").lower()
+                        if "100%" in row_text or "success" in row_html or "complete" in row_html:
+                            return  # Fertig!
+                        if "error" in row_html or "failed" in row_html:
+                            raise RuntimeError(
+                                f"Doremi Ingest fehlgeschlagen für '{dcp_name}'"
+                            )
+                        break
+            except RuntimeError:
+                raise
+            except Exception:
+                pass  # kurze Verbindungsunterbrechung ignorieren
+
+        # Timeout – kein Abbruchfehler, DCP läuft möglicherweise noch
+    finally:
+        driver.quit()
 
 # ──────────────────────────────────────────────
 # In-App Update System
