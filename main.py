@@ -221,12 +221,14 @@ def queue_worker():
 _PHASE_MELDUNGEN = {
     1: "✓ DCP erstellt",
     2: "✓ Hochgeladen",
-    3: "✓ Ingest gestartet",
 }
 
 def _ist_solo():
-    """True wenn nur dieser eine Job gerade aktiv ist (kein Batch)."""
-    return len(job_manager.hole_aktive()) <= 1
+    """True nur wenn kein anderer Job aktiv UND Queue leer ist."""
+    if len(job_manager.hole_aktive()) > 1:
+        return False
+    # Auch Queue-Einträge (pending + naming) zählen als Batch
+    return queue_manager.pending_anzahl() == 0
 
 def _phase_ausfuehren(job_id, phase, fn):
     job = job_manager.hole_job(job_id)
