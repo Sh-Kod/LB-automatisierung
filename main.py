@@ -575,14 +575,29 @@ def _erstelle_selenium_driver():
 
 
 def _doremi_login(driver, ip, user, passwd):
-    """Setzt HTTP-Basic-Auth-Header via Chrome DevTools Protocol und öffnet die Doremi-Seite."""
-    auth_header = "Basic " + base64.b64encode(f"{user}:{passwd}".encode()).decode()
-    driver.execute_cdp_cmd("Network.enable", {})
-    driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {
-        "headers": {"Authorization": auth_header}
-    })
+    """Loggt sich via Login-Formular in Doremi DCP2000 ein (form-basiert, kein Basic Auth)."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
     driver.get(f"http://{ip}/web/")
-    time.sleep(2)
+    wait = WebDriverWait(driver, 15)
+
+    # Warte auf Username-Feld
+    user_field = wait.until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='username'], input[type='text']"))
+    )
+    user_field.clear()
+    user_field.send_keys(user)
+
+    # Password-Feld
+    pass_field = driver.find_element(By.CSS_SELECTOR, "input[name='password'], input[type='password']")
+    pass_field.clear()
+    pass_field.send_keys(passwd)
+
+    # Login-Button klicken
+    driver.find_element(By.CSS_SELECTOR, "input[type='submit'], button[type='submit'], button").click()
+    time.sleep(3)
 
 
 def _ingest_starten(job_id):
@@ -617,48 +632,56 @@ def _ingest_starten(job_id):
     try:
         _doremi_login(driver, ip, user, passwd)
 
-        gefunden = False
+        dcp_gefunden = False
         # 3 Versuche – Doremi kann nach FTP noch kurz brauchen zum Indexieren
         for versuch in range(3):
             driver.get(ingest_url)
             wait = WebDriverWait(driver, 30)
 
+            # "Local Storage" aus Dropdown wählen
             try:
                 dropdown_el = wait.until(
                     EC.presence_of_element_located((By.TAG_NAME, "select"))
                 )
                 sel = Select(dropdown_el)
                 sel.select_by_visible_text("Local Storage")
-                time.sleep(8)
-                driver.get(ingest_url)  # Seite neu laden damit Liste aktuell ist
-                time.sleep(3)
+                time.sleep(8)  # Doremi lädt Liste nach Auswahl
             except Exception:
                 time.sleep(5)
 
-            rows = driver.find_elements(By.TAG_NAME, "tr")
-            for row in rows:
-                if dcp_name.lower() in row.text.lower():
-                    btns = row.find_elements(By.TAG_NAME, "button")
-                    if not btns:
-                        btns = row.find_elements(
-                            By.CSS_SELECTOR, "input[type='submit'], input[type='button']"
-                        )
-                    if btns:
-                        btns[0].click()
-                        gefunden = True
-                        break
+            # DCP-Checkbox in der Liste suchen und anhaken
+            # Doremi zeigt jedes DCP als Zeile mit Checkbox
+            for element in driver.find_elements(By.CSS_SELECTOR, "tr, li, .dcp-item"):
+                if dcp_name.lower() in element.text.lower():
+                    cbs = element.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+                    if cbs:
+                        if not cbs[0].is_selected():
+                            cbs[0].click()
+                        dcp_gefunden = True
+                    break
 
-            if gefunden:
+            if dcp_gefunden:
                 break
             if versuch < 2:
                 time.sleep(20)
 
-        if not gefunden:
+        if not dcp_gefunden:
             sichtbar = driver.find_element(By.TAG_NAME, "body").text[:400]
             raise RuntimeError(
                 f"DCP '{dcp_name}' nach 3 Versuchen nicht in Ingest-Liste.\n"
                 f"Doremi zeigt: {sichtbar}"
             )
+
+        # Globalen "Ingest >" Button klicken (wählt alle markierten DCPs)
+        ingest_geklickt = False
+        for btn in driver.find_elements(By.CSS_SELECTOR, "button, input[type='button'], input[type='submit']"):
+            btn_text = (btn.text + " " + (btn.get_attribute("value") or "")).lower()
+            if "ingest" in btn_text:
+                btn.click()
+                ingest_geklickt = True
+                break
+        if not ingest_geklickt:
+            raise RuntimeError("Ingest-Button nicht gefunden auf der Seite")
         time.sleep(2)
     finally:
         driver.quit()
@@ -1095,6 +1118,7 @@ def bearbeite_befehl(text):
 
 if __name__ == "__main__":
     queue_manager.naming_zuruecksetzen()
+    job_manager.bereinige_alte_jobs(tage=7)  # Stale Einträge aus jobs.json entfernen
 
     cfg = lade_config()
     intervall        = cfg.get("zeitplan", {}).get("intervall_minuten", 60)
