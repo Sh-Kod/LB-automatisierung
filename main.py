@@ -107,6 +107,40 @@ def _scan_ordner(ordner, dauer_sek):
             neu += 1
     return neu
 
+def _scanne_fertige_dcps():
+    """Sucht fertige DCPs in dcp_ausgabe (ASSETMAP vorhanden) und startet
+    direkt ab Phase 2 (Upload) – ohne Naming oder DCP-Erstellung."""
+    cfg = lade_config()
+    dcp_ausgabe = cfg.get("ordner", {}).get("dcp_ausgabe", "")
+    if not dcp_ausgabe or not os.path.exists(dcp_ausgabe):
+        return 0
+
+    gefunden = 0
+    for eintrag in sorted(os.listdir(dcp_ausgabe)):
+        if eintrag.startswith("_tmp_"):
+            continue  # Laufende DCP-Erstellung überspringen
+        dcp_pfad = os.path.join(dcp_ausgabe, eintrag)
+        if not os.path.isdir(dcp_pfad):
+            continue
+        # Prüfe ob es ein fertiger DCP ist (ASSETMAP vorhanden)
+        hat_assetmap = any(
+            "ASSETMAP" in f.upper()
+            for f in os.listdir(dcp_pfad)
+        )
+        if not hat_assetmap:
+            continue
+        # Prüfe ob bereits ein aktiver/fehlerhafter Job läuft
+        if job_manager.hat_job_fuer_dcp(eintrag):
+            continue
+        # Job ab Phase 2 (Upload) erstellen
+        job_id = job_manager.erstelle_job("", eintrag)
+        threading.Thread(
+            target=verarbeite_job, args=(job_id, 2), daemon=True
+        ).start()
+        gefunden += 1
+    return gefunden
+
+
 def starte_verarbeitung():
     with _scan_pausiert_lock:
         if _scan_pausiert:
@@ -117,6 +151,13 @@ def starte_verarbeitung():
     gesamt += _scan_ordner(cfg.get("eingang_15sec", ""), 15)
     if gesamt > 0:
         telegram_bot.sende_nachricht(f"{gesamt} neues Bild(er) in Queue aufgenommen.")
+
+    # Fertige DCPs in dcp_ausgabe direkt ab Upload starten
+    dcp_gesamt = _scanne_fertige_dcps()
+    if dcp_gesamt > 0:
+        telegram_bot.sende_nachricht(
+            f"{dcp_gesamt} fertiger DCP(s) gefunden – Upload läuft im Hintergrund..."
+        )
 
 # ──────────────────────────────────────────────
 # Queue-Worker: sequentieller Benennungs-Dialog
@@ -476,13 +517,7 @@ def _upload_durchfuehren(job_id):
         ftp.cwd(dcp_name)
         _upload_dir(ftp, dcp_pfad)
 
-    # DCP-Ordner in Upload-Archiv verschieben
-    dcp_archiv = cfg["ordner"]["dcp_archiv"]
-    os.makedirs(dcp_archiv, exist_ok=True)
-    ziel = os.path.join(dcp_archiv, dcp_name)
-    if os.path.exists(ziel):
-        shutil.rmtree(ziel)
-    shutil.move(dcp_pfad, ziel)
+    # DCP bleibt in dcp_ausgabe – wird erst nach erfolgreichem Ingest verschoben
 
 
 def _warte_bis_ftp_bereit(cfg, dcp_name, timeout_min=20):
@@ -746,9 +781,20 @@ def _monitoring_ueberwachen(job_id):
     finally:
         driver.quit()
 
-    # FTP aufräumen nach erfolgreichem Ingest
+    # Erst nach 100% Ingest: FTP aufräumen + DCP ins Archiv verschieben
     if ingest_fertig:
         _ftp_ordner_loeschen(cfg, dcp_name)
+        try:
+            dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
+            if os.path.exists(dcp_pfad_lokal):
+                dcp_archiv = cfg["ordner"]["dcp_archiv"]
+                os.makedirs(dcp_archiv, exist_ok=True)
+                ziel = os.path.join(dcp_archiv, dcp_name)
+                if os.path.exists(ziel):
+                    shutil.rmtree(ziel)
+                shutil.move(dcp_pfad_lokal, ziel)
+        except Exception:
+            pass  # Archiv-Move ist Best-Effort – Ingest war trotzdem erfolgreich
 
 # ──────────────────────────────────────────────
 # Status-Updates + Abschluss

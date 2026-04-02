@@ -117,6 +117,17 @@ def hole_job(job_id):
                 return dict(j)
     return None
 
+def hat_job_fuer_dcp(dcp_name):
+    """True wenn ein laufender/fehlerhafter Job für diesen DCP-Namen existiert."""
+    with _lock:
+        data = _lade()
+        for j in data["jobs"]:
+            if j.get("final_name") == dcp_name and j["current_status"] in (
+                "running", "error", "retry_pending"
+            ):
+                return True
+    return False
+
 def hole_fehler():
     with _lock:
         data = _lade()
