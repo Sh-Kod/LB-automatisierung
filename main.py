@@ -26,6 +26,8 @@ UPDATER_PFAD      = "C:\\dcp_automatisierung\\updater.py"
 
 _scan_pausiert      = False
 _scan_pausiert_lock = threading.Lock()
+_naming_aktiv       = False
+_naming_aktiv_lock  = threading.Lock()
 
 # ──────────────────────────────────────────────
 # Hilfsfunktionen
@@ -51,23 +53,47 @@ def _trenn():
     return "─" * 30
 
 # ──────────────────────────────────────────────
-# Naming-Vorschlag aus Rules
+# Naming: Typ-Erkennung + Vorschlag
 # ──────────────────────────────────────────────
 
-def schlage_namen_vor(ocr_text):
-    """Versucht aus OCR-Text und naming_rules.yaml einen DCP-Namen vorzuschlagen."""
-    try:
-        with open(RULES_PFAD, "r", encoding="utf-8") as f:
-            rules_data = yaml.safe_load(f)
-        regeln = (rules_data or {}).get("regeln", [])
-        for regel in regeln:
-            muster  = regel.get("muster", "")
-            vorlage = regel.get("vorlage", "")
-            if muster and vorlage and re.search(muster, ocr_text, re.IGNORECASE):
-                return vorlage.replace("{JAHR}", str(datetime.now().year))
-    except Exception:
-        pass
-    return None
+def _erkenne_typ_und_vorschlag(ocr_text):
+    """Erkennt DCP-Typ aus OCR-Text (MEK, ZiK, TK, FK) und erstellt Vorschlag.
+    Gibt (typ_string_oder_None, vorschlag_oder_None) zurück."""
+    text  = ocr_text.upper()
+    monat = datetime.now().strftime("%m")
+    tag   = datetime.now().strftime("%d")
+
+    if any(x in text for x in ["MEIN ERSTER KINOBESUCH", "KINOBESUCH", "MEK"]):
+        typ, prefix = "MeK – Mein erster Kinobesuch", "LB_MeK"
+    elif any(x in text for x in ["ZURÜCK IM KINO", "ZURUCK IM KINO", "ZURCK IM KINO", "ZIK"]):
+        typ, prefix = "ZiK – Zurück im Kino", "LB_ZiK"
+    elif "TRAUMKINO" in text:
+        typ, prefix = "TK – Traumkino", "LB_TK"
+    elif "FILMKLASSIKER" in text:
+        typ, prefix = "FK – Filmklassiker", "LB_FK"
+    else:
+        # Fallback: naming_rules.yaml
+        try:
+            with open(RULES_PFAD, "r", encoding="utf-8") as f:
+                rules_data = yaml.safe_load(f)
+            for regel in (rules_data or {}).get("regeln", []):
+                muster  = regel.get("muster", "")
+                vorlage = regel.get("vorlage", "")
+                if muster and vorlage and re.search(muster, ocr_text, re.IGNORECASE):
+                    return None, vorlage.replace("{JAHR}", str(datetime.now().year))
+        except Exception:
+            pass
+        return None, None
+
+    return typ, f"{prefix}_[FILMNAME]_{monat}_{tag}"
+
+
+def _bereinige_dcp_name(name):
+    """Wandelt Umlaute um und entfernt unerlaubte Zeichen aus DCP-Namen."""
+    for orig, repl in [("ä","ae"),("ö","oe"),("ü","ue"),("Ä","Ae"),("Ö","Oe"),("Ü","Ue"),("ß","ss")]:
+        name = name.replace(orig, repl)
+    name = re.sub(r"[^a-zA-Z0-9_\-]", "_", name)
+    return re.sub(r"_+", "_", name).strip("_")
 
 # ──────────────────────────────────────────────
 # Ordner-Scan → Queue
@@ -101,12 +127,27 @@ def _dialog_zeitüberschreitung(item_id):
     telegram_bot.sende_nachricht("Timeout – Bild zurück in Queue.")
 
 def queue_worker():
+    global _naming_aktiv
     time.sleep(5)
     while True:
-        item = queue_manager.naechstes_pending()
-        if not item:
+        # Pause-Check: Bei Pause keinen neuen Naming-Dialog starten
+        with _scan_pausiert_lock:
+            pausiert = _scan_pausiert
+        if pausiert:
+            with _naming_aktiv_lock:
+                _naming_aktiv = False
             time.sleep(10)
             continue
+
+        item = queue_manager.naechstes_pending()
+        if not item:
+            with _naming_aktiv_lock:
+                _naming_aktiv = False
+            time.sleep(10)
+            continue
+
+        with _naming_aktiv_lock:
+            _naming_aktiv = True
 
         if not telegram_bot.starte_dialog():
             queue_manager.zuruecksetzen(item["id"])
@@ -114,8 +155,8 @@ def queue_worker():
             continue
 
         try:
-            bildpfad    = item["bildpfad"]
-            dauer_sek   = item["dauer_sek"]
+            bildpfad     = item["bildpfad"]
+            dauer_sek    = item["dauer_sek"]
             pending_rest = queue_manager.pending_anzahl()
 
             # Bild senden
@@ -127,34 +168,35 @@ def queue_worker():
             except Exception:
                 telegram_bot.sende_nachricht(f"Bild: {os.path.basename(bildpfad)}")
 
-            # OCR
+            # OCR + Typ-Erkennung
             ocr_text = ""
             try:
                 ocr_text = analyzer.lese_text_aus_bild(bildpfad)
             except Exception:
                 pass
 
-            # Vorschlag aus Naming-Rules
-            vorschlag = schlage_namen_vor(ocr_text)
+            typ, vorschlag = _erkenne_typ_und_vorschlag(ocr_text)
 
             # Dialog aufbauen
             t = _trenn()
             msg = f"{t}\n"
             if ocr_text:
                 msg += f"OCR-Text:\n{ocr_text[:300].strip()}\n\n"
+            if typ:
+                msg += f"Typ erkannt: {typ}\n\n"
             if vorschlag:
                 msg += f"Vorschlag:\n{vorschlag}\n\n"
                 msg += "[1]  Vorschlag übernehmen\n"
                 msg += "[2]  Eigenen Namen eingeben\n"
                 msg += "[3]  Überspringen\n"
             else:
-                msg += "Kein Vorschlag (keine Regel gefunden)\n\n"
+                msg += "Kein Typ erkannt – bitte Namen eingeben\n\n"
                 msg += "[1]  Namen eingeben\n"
                 msg += "[2]  Überspringen\n"
             msg += f"{t}\n(Timeout: 60 Min)"
             telegram_bot.sende_nachricht(msg)
 
-            # Schritt 1: Auswahl abwarten
+            # Auswahl abwarten
             antwort = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
             if antwort is None:
                 _dialog_zeitüberschreitung(item["id"])
@@ -177,8 +219,7 @@ def queue_worker():
                 elif a in ("3", "/skip"):
                     skip = True
                 else:
-                    # Direkte Namenseingabe akzeptieren
-                    final_name = a
+                    final_name = a  # direkte Namenseingabe
             else:
                 if a == "1":
                     telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
@@ -198,10 +239,11 @@ def queue_worker():
                     f"Übersprungen: {os.path.basename(bildpfad)}"
                 )
             elif final_name:
+                final_name = _bereinige_dcp_name(final_name)
                 queue_manager.abschliessen(item["id"])
                 job_id = job_manager.erstelle_job(bildpfad, final_name)
                 telegram_bot.sende_nachricht(
-                    f"Name gesetzt: {final_name}\nVerarbeitung läuft..."
+                    f"Name gesetzt: {final_name}\nVerarbeitung läuft im Hintergrund..."
                 )
                 threading.Thread(
                     target=verarbeite_job, args=(job_id, 1), daemon=True
@@ -224,26 +266,33 @@ _PHASE_MELDUNGEN = {
 }
 
 def _ist_solo():
-    """True nur wenn kein anderer Job aktiv UND Queue leer ist."""
+    """True nur wenn: kein Naming läuft, Queue leer, max 1 Job aktiv."""
+    with _naming_aktiv_lock:
+        if _naming_aktiv:
+            return False
     if len(job_manager.hole_aktive()) > 1:
         return False
-    # Auch Queue-Einträge (pending + naming) zählen als Batch
     return queue_manager.pending_anzahl() == 0
 
 def _phase_ausfuehren(job_id, phase, fn):
     job = job_manager.hole_job(job_id)
     name = (job.get("final_name") or "?") if job else "?"
+    phasen_txt = {1: "DCP", 2: "Upload", 3: "Ingest", 4: "Monitor"}
     try:
         job_manager.aktualisiere_phase(job_id, phase, "running")
         fn(job_id)
         job_manager.aktualisiere_phase(job_id, phase, "done")
-        # Phasen 1-3: Einzelmeldung nur im Solo-Modus
-        # Phase 4: job_manager sendet "Fertig: NAME" als 4. Meldung
         if _ist_solo() and phase in _PHASE_MELDUNGEN:
             telegram_bot.sende_nachricht(f"{_PHASE_MELDUNGEN[phase]}\n{name}")
         return True
     except Exception as e:
-        job_manager.markiere_fehler(job_id, phase, str(e), retryable=True)
+        fehler_kurz = str(e)[:300]
+        job_manager.markiere_fehler(job_id, phase, fehler_kurz, retryable=True)
+        telegram_bot.sende_nachricht(
+            f"Fehler [{phasen_txt.get(phase,'?')}]: {name}\n"
+            f"{fehler_kurz}\n\n"
+            f"→ /retry {job_id}"
+        )
         return False
 
 def verarbeite_job(job_id, ab_phase=1):
@@ -436,6 +485,75 @@ def _upload_durchfuehren(job_id):
     shutil.move(dcp_pfad, ziel)
 
 
+def _warte_bis_ftp_bereit(cfg, dcp_name, timeout_min=20):
+    """Wartet per FTP-Verify bis DCP auf Doremi /gui vollständig geschrieben ist.
+    Gibt True zurück wenn ASSETMAP gefunden, False bei Timeout."""
+    import ftplib
+    ip     = cfg["doremi"]["ip"]
+    user   = cfg["doremi"]["ftp_user"]
+    passwd = cfg["doremi"]["ftp_pass"]
+    deadline = time.time() + timeout_min * 60
+    while time.time() < deadline:
+        try:
+            with ftplib.FTP(timeout=30) as ftp:
+                ftp.connect(ip, 21)
+                ftp.login(user, passwd)
+                ftp.set_pasv(True)
+                ftp.cwd(f"/gui/{dcp_name}")
+                dateien = ftp.nlst()
+                if any("ASSETMAP" in d.upper() for d in dateien):
+                    return True
+        except Exception:
+            pass
+        time.sleep(10)
+    return False
+
+
+def _ftp_ordner_loeschen(cfg, dcp_name):
+    """Löscht DCP-Ordner rekursiv von Doremi /gui nach erfolgreichem Ingest."""
+    import ftplib
+
+    def rmtree(ftp, pfad):
+        eintraege = []
+        try:
+            ftp.retrlines(f"LIST {pfad}", eintraege.append)
+        except Exception:
+            return
+        for zeile in eintraege:
+            teile = zeile.split(None, 8)
+            if len(teile) < 9:
+                continue
+            name = teile[8]
+            voll = f"{pfad}/{name}"
+            if zeile.startswith("d"):
+                rmtree(ftp, voll)
+                try:
+                    ftp.rmd(voll)
+                except Exception:
+                    pass
+            else:
+                try:
+                    ftp.delete(voll)
+                except Exception:
+                    pass
+        try:
+            ftp.rmd(pfad)
+        except Exception:
+            pass
+
+    try:
+        ip     = cfg["doremi"]["ip"]
+        user   = cfg["doremi"]["ftp_user"]
+        passwd = cfg["doremi"]["ftp_pass"]
+        with ftplib.FTP(timeout=60) as ftp:
+            ftp.connect(ip, 21)
+            ftp.login(user, passwd)
+            ftp.set_pasv(True)
+            rmtree(ftp, f"/gui/{dcp_name}")
+    except Exception:
+        pass  # Best-Effort – kein harter Fehler
+
+
 def _erstelle_selenium_driver():
     """Erstellt einen Chrome-Headless-Treiber via webdriver_manager."""
     from selenium import webdriver
@@ -482,49 +600,64 @@ def _ingest_starten(job_id):
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
-    time.sleep(5)  # sicherstellen, dass FTP fertig ist
+    # FTP-Verify: warten bis DCP wirklich auf Doremi angekommen ist
+    bereit = _warte_bis_ftp_bereit(cfg, dcp_name, timeout_min=20)
+    if not bereit:
+        raise RuntimeError(
+            f"DCP '{dcp_name}' nach 20 Min nicht auf Doremi /gui verfügbar. "
+            f"FTP-Upload möglicherweise unvollständig."
+        )
+
+    ingest_url = (
+        f"http://{ip}/web/sys_control/index.php"
+        "?page=ingest_manager/ingest_scan.php"
+    )
 
     driver = _erstelle_selenium_driver()
     try:
         _doremi_login(driver, ip, user, passwd)
 
-        # Zur Ingest-Scan-Seite navigieren
-        driver.get(
-            f"http://{ip}/web/sys_control/index.php"
-            "?page=ingest_manager/ingest_scan.php"
-        )
-        wait = WebDriverWait(driver, 30)
-
-        # "Local Storage" aus Dropdown wählen
-        try:
-            dropdown_el = wait.until(
-                EC.presence_of_element_located((By.TAG_NAME, "select"))
-            )
-            sel = Select(dropdown_el)
-            sel.select_by_visible_text("Local Storage")
-            time.sleep(3)
-        except Exception:
-            pass  # Dropdown möglicherweise nicht vorhanden oder schon korrekt gesetzt
-
-        # DCP in der Tabelle suchen und Ingest-Button klicken
-        rows = driver.find_elements(By.TAG_NAME, "tr")
         gefunden = False
-        for row in rows:
-            if dcp_name.lower() in row.text.lower():
-                # Button oder Input in der Zeile klicken
-                btns = row.find_elements(By.TAG_NAME, "button")
-                if not btns:
-                    btns = row.find_elements(
-                        By.CSS_SELECTOR, "input[type='submit'], input[type='button']"
-                    )
-                if btns:
-                    btns[0].click()
-                    gefunden = True
-                    break
+        # 3 Versuche – Doremi kann nach FTP noch kurz brauchen zum Indexieren
+        for versuch in range(3):
+            driver.get(ingest_url)
+            wait = WebDriverWait(driver, 30)
+
+            try:
+                dropdown_el = wait.until(
+                    EC.presence_of_element_located((By.TAG_NAME, "select"))
+                )
+                sel = Select(dropdown_el)
+                sel.select_by_visible_text("Local Storage")
+                time.sleep(8)
+                driver.get(ingest_url)  # Seite neu laden damit Liste aktuell ist
+                time.sleep(3)
+            except Exception:
+                time.sleep(5)
+
+            rows = driver.find_elements(By.TAG_NAME, "tr")
+            for row in rows:
+                if dcp_name.lower() in row.text.lower():
+                    btns = row.find_elements(By.TAG_NAME, "button")
+                    if not btns:
+                        btns = row.find_elements(
+                            By.CSS_SELECTOR, "input[type='submit'], input[type='button']"
+                        )
+                    if btns:
+                        btns[0].click()
+                        gefunden = True
+                        break
+
+            if gefunden:
+                break
+            if versuch < 2:
+                time.sleep(20)
+
         if not gefunden:
+            sichtbar = driver.find_element(By.TAG_NAME, "body").text[:400]
             raise RuntimeError(
-                f"DCP '{dcp_name}' nicht in Ingest-Liste gefunden. "
-                f"Ist der FTP-Upload nach /gui abgeschlossen?"
+                f"DCP '{dcp_name}' nach 3 Versuchen nicht in Ingest-Liste.\n"
+                f"Doremi zeigt: {sichtbar}"
             )
         time.sleep(2)
     finally:
@@ -544,6 +677,7 @@ def _monitoring_ueberwachen(job_id):
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
+    ingest_fertig = False
     driver = _erstelle_selenium_driver()
     try:
         _doremi_login(driver, ip, user, passwd)
@@ -553,8 +687,8 @@ def _monitoring_ueberwachen(job_id):
             "?page=ingest_manager/ingest_monitor.php"
         )
 
-        # Polling – max. 10 Minuten (120 × 5s)
-        for _ in range(120):
+        # Polling – max. 15 Minuten (180 × 5s)
+        for _ in range(180):
             time.sleep(5)
             try:
                 driver.refresh()
@@ -562,29 +696,79 @@ def _monitoring_ueberwachen(job_id):
 
                 # Nicht mehr in der Liste → Ingest abgeschlossen
                 if dcp_name.lower() not in page_text:
-                    return
+                    ingest_fertig = True
+                    break
 
-                # Zeile mit dem DCP suchen und Status prüfen
                 rows = driver.find_elements(By.TAG_NAME, "tr")
                 for row in rows:
                     if dcp_name.lower() in row.text.lower():
                         row_text = row.text.lower()
                         row_html = row.get_attribute("innerHTML").lower()
                         if "100%" in row_text or "success" in row_html or "complete" in row_html:
-                            return  # Fertig!
+                            ingest_fertig = True
+                            break
                         if "error" in row_html or "failed" in row_html:
                             raise RuntimeError(
                                 f"Doremi Ingest fehlgeschlagen für '{dcp_name}'"
                             )
                         break
+                if ingest_fertig:
+                    break
             except RuntimeError:
                 raise
             except Exception:
-                pass  # kurze Verbindungsunterbrechung ignorieren
+                pass
 
-        # Timeout – kein Abbruchfehler, DCP läuft möglicherweise noch
+        # Timeout ohne Fehler – DCP möglicherweise noch am Ingest
     finally:
         driver.quit()
+
+    # FTP aufräumen nach erfolgreichem Ingest
+    if ingest_fertig:
+        _ftp_ordner_loeschen(cfg, dcp_name)
+
+# ──────────────────────────────────────────────
+# Status-Updates + Abschluss
+# ──────────────────────────────────────────────
+
+def sende_status_update():
+    """Wird alle 15 Min aufgerufen. Sendet kompakten Status wenn Naming fertig
+    aber noch Jobs laufen. Sendet Abschlussmeldung wenn alles fertig."""
+    with _naming_aktiv_lock:
+        naming_laeuft = _naming_aktiv
+    if naming_laeuft:
+        return  # Während Naming keine Statusmeldungen
+
+    aktive = job_manager.hole_aktive()
+    fehler = job_manager.hole_fehler()
+
+    if not aktive and not fehler:
+        return  # Nichts zu melden
+
+    t = _trenn()
+    phasen_txt = {1: "DCP läuft", 2: "Upload läuft", 3: "Ingest läuft", 4: "Monitor läuft"}
+
+    if aktive:
+        nach_phase = {}
+        for j in aktive:
+            p = phasen_txt.get(j.get("current_phase"), "läuft")
+            nach_phase[p] = nach_phase.get(p, 0) + 1
+        msg = f"{t}\nStatus\n{t}\n"
+        for pname, anzahl in nach_phase.items():
+            msg += f"{pname}: {anzahl}\n"
+        if fehler:
+            msg += f"Fehler: {len(fehler)}  → /jobs\n"
+        telegram_bot.sende_nachricht(msg)
+    else:
+        # Alle fertig (nur Fehler übrig)
+        msg = f"{t}\nAbgeschlossen\n{t}\n"
+        msg += f"Fehler: {len(fehler)}\n"
+        for j in fehler[:5]:
+            name = (j.get("final_name") or "?")[:30]
+            msg += f"• {name}\n"
+        msg += f"\n/jobs für Details  |  /retry_alle"
+        telegram_bot.sende_nachricht(msg)
+
 
 # ──────────────────────────────────────────────
 # In-App Update System
@@ -917,6 +1101,7 @@ if __name__ == "__main__":
     update_intervall = cfg.get("update", {}).get("auto_update_intervall_stunden", 24)
 
     job_manager.setze_status_callback(telegram_bot.sende_nachricht)
+    job_manager.setze_naming_check(lambda: _naming_aktiv)
 
     pruefe_update_ergebnis()
 
@@ -931,7 +1116,7 @@ if __name__ == "__main__":
     threading.Thread(target=queue_worker, daemon=True).start()
 
     schedule.every(intervall).minutes.do(starte_verarbeitung).tag("scan")
-    schedule.every(5).minutes.do(job_manager.sende_bundle_wenn_noetig).tag("bundle")
+    schedule.every(15).minutes.do(sende_status_update).tag("status")
     if update_intervall > 0:
         schedule.every(update_intervall).hours.do(
             lambda: threading.Thread(target=pruefe_update, daemon=True).start()
