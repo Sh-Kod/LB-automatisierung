@@ -2,7 +2,7 @@ import json
 import os
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 JOBS_PFAD = "C:\\dcp_automatisierung\\jobs.json"
 _lock = threading.Lock()
@@ -209,3 +209,26 @@ def _flush_buffer():
 def _sende_einzeln(job):
     # Nicht mehr verwendet – Fehler werden von main._phase_ausfuehren gemeldet
     pass
+
+
+def bereinige_alte_jobs(tage=7):
+    """Entfernt abgeschlossene und fehlerhafte Jobs die älter als X Tage sind."""
+    grenze = datetime.now() - timedelta(days=tage)
+    with _lock:
+        data = _lade()
+        vorher = len(data["jobs"])
+        data["jobs"] = [
+            j for j in data["jobs"]
+            if j.get("current_status") == "running"
+            or _parse_ts(j.get("timestamp")) > grenze
+        ]
+        if len(data["jobs"]) < vorher:
+            _speichere(data)
+    return vorher - len(data.get("jobs", []))
+
+
+def _parse_ts(ts_str):
+    try:
+        return datetime.fromisoformat(ts_str)
+    except Exception:
+        return datetime.min
