@@ -9,12 +9,17 @@ _lock = threading.Lock()
 _status_buffer = []
 _status_buffer_lock = threading.Lock()
 _status_callback = None
+_naming_check = None  # callable → True wenn Naming noch läuft
 
 PHASEN = {1: "DCP", 2: "Upload", 3: "Ingest", 4: "Monitoring"}
 
 def setze_status_callback(fn):
     global _status_callback
     _status_callback = fn
+
+def setze_naming_check(fn):
+    global _naming_check
+    _naming_check = fn
 
 def _lade():
     if not os.path.exists(JOBS_PFAD):
@@ -166,47 +171,41 @@ def _melde_status(job, aktive_nach):
     with _status_buffer_lock:
         _status_buffer.append(job)
         if aktive_nach == 0:
-            _flush_buffer()
+            # Nur flushen wenn Naming fertig
+            naming = _naming_check() if _naming_check else False
+            if not naming:
+                _flush_buffer()
 
 def _flush_buffer():
     """Muss mit _status_buffer_lock aufgerufen werden."""
-    if not _status_buffer:
+    if not _status_buffer or not _status_callback:
         return
-    if len(_status_buffer) == 1:
-        _sende_einzeln(_status_buffer[0])
+    fertig = [j for j in _status_buffer if j["current_status"] == "done"]
+    fehler = [j for j in _status_buffer if j["current_status"] == "error"]
+    if not fertig and not fehler:
+        _status_buffer.clear()
+        return
+
+    if len(_status_buffer) == 1 and fertig:
+        # Einzelner Job: einfache Fertig-Meldung
+        name = (fertig[0].get("final_name") or os.path.basename(fertig[0].get("bildpfad", "")))
+        _status_callback(f"Fertig: {name}")
     else:
-        fertig = [j for j in _status_buffer if j["current_status"] == "done"]
-        fehler = [j for j in _status_buffer if j["current_status"] == "error"]
-        teile = []
+        # Batch-Abschluss
+        t = "─" * 30
+        msg = f"{t}\nAlle fertig!\n{t}\n"
         if fertig:
-            teile.append(f"{len(fertig)} fertig")
+            msg += f"✓ {len(fertig)} DCP(s) erfolgreich\n"
         if fehler:
-            teile.append(f"{len(fehler)} Fehler")
-        msg = "Batch-Status: " + ", ".join(teile)
-        if fehler:
-            msg += "\n\nFehler-Details:"
+            msg += f"✗ {len(fehler)} Fehler:\n"
             for j in fehler[:5]:
                 phase = PHASEN.get(j.get("error_phase"), "?")
-                name = (j.get("final_name") or os.path.basename(j.get("bildpfad", "")))[:30]
-                msg += f"\n• {name} [{phase}]: {(j.get('fehler_text') or '')[:80]}"
-        if _status_callback:
-            _status_callback(msg)
+                name  = (j.get("final_name") or os.path.basename(j.get("bildpfad", "")))[:30]
+                msg  += f"  • {name} [{phase}]\n"
+            msg += "/jobs für Details  |  /retry_alle"
+        _status_callback(msg)
     _status_buffer.clear()
 
 def _sende_einzeln(job):
-    if not _status_callback:
-        return
-    name = (job.get("final_name") or os.path.basename(job.get("bildpfad", "")))
-    if job["current_status"] == "done":
-        msg = f"Fertig: {name}"
-    elif job["current_status"] == "error":
-        phase = PHASEN.get(job.get("error_phase"), "?")
-        msg = f"Fehler [{phase}]: {name}\n{job.get('fehler_text', '')[:200]}"
-    else:
-        return
-    _status_callback(msg)
-
-def sende_bundle_wenn_noetig():
-    """Wird alle 5 Minuten vom Scheduler aufgerufen."""
-    with _status_buffer_lock:
-        _flush_buffer()
+    # Nicht mehr verwendet – Fehler werden von main._phase_ausfuehren gemeldet
+    pass
