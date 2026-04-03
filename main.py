@@ -801,42 +801,30 @@ def _monitoring_ueberwachen(job_id):
 # ──────────────────────────────────────────────
 
 def sende_status_update():
-    """Wird alle 15 Min aufgerufen. Sendet kompakten Status wenn Naming fertig
-    aber noch Jobs laufen. Sendet Abschlussmeldung wenn alles fertig."""
+    """Wird alle 15 Min aufgerufen. Sendet Status NUR wenn Jobs aktiv laufen.
+    Abschlussmeldungen kommen einmalig vom job_manager – nicht von hier."""
     with _naming_aktiv_lock:
         naming_laeuft = _naming_aktiv
     if naming_laeuft:
         return  # Während Naming keine Statusmeldungen
 
     aktive = job_manager.hole_aktive()
+    if not aktive:
+        return  # Keine laufenden Jobs → nichts zu berichten
+
     fehler = job_manager.hole_fehler()
-
-    if not aktive and not fehler:
-        return  # Nichts zu melden
-
     t = _trenn()
     phasen_txt = {1: "DCP läuft", 2: "Upload läuft", 3: "Ingest läuft", 4: "Monitor läuft"}
-
-    if aktive:
-        nach_phase = {}
-        for j in aktive:
-            p = phasen_txt.get(j.get("current_phase"), "läuft")
-            nach_phase[p] = nach_phase.get(p, 0) + 1
-        msg = f"{t}\nStatus\n{t}\n"
-        for pname, anzahl in nach_phase.items():
-            msg += f"{pname}: {anzahl}\n"
-        if fehler:
-            msg += f"Fehler: {len(fehler)}  → /jobs\n"
-        telegram_bot.sende_nachricht(msg)
-    else:
-        # Alle fertig (nur Fehler übrig)
-        msg = f"{t}\nAbgeschlossen\n{t}\n"
-        msg += f"Fehler: {len(fehler)}\n"
-        for j in fehler[:5]:
-            name = (j.get("final_name") or "?")[:30]
-            msg += f"• {name}\n"
-        msg += f"\n/jobs für Details  |  /retry_alle"
-        telegram_bot.sende_nachricht(msg)
+    nach_phase = {}
+    for j in aktive:
+        p = phasen_txt.get(j.get("current_phase"), "läuft")
+        nach_phase[p] = nach_phase.get(p, 0) + 1
+    msg = f"{t}\nStatus\n{t}\n"
+    for pname, anzahl in nach_phase.items():
+        msg += f"{pname}: {anzahl}\n"
+    if fehler:
+        msg += f"Fehler: {len(fehler)}  → /jobs\n"
+    telegram_bot.sende_nachricht(msg)
 
 
 # ──────────────────────────────────────────────
