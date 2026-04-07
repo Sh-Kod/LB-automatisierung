@@ -28,6 +28,7 @@ _scan_pausiert      = False
 _scan_pausiert_lock = threading.Lock()
 _naming_aktiv       = False
 _naming_aktiv_lock  = threading.Lock()
+_selenium_lock      = threading.Lock()   # verhindert gleichzeitige chromedriver-Initialisierung
 
 # ──────────────────────────────────────────────
 # Hilfsfunktionen
@@ -590,11 +591,16 @@ def _ftp_ordner_loeschen(cfg, dcp_name):
 
 
 def _erstelle_selenium_driver():
-    """Erstellt einen Chrome-Headless-Treiber via webdriver_manager."""
+    """Erstellt einen Chrome-Headless-Treiber.
+    Lock verhindert WinError 5 wenn mehrere Jobs gleichzeitig starten."""
+    import os
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
     from webdriver_manager.chrome import ChromeDriverManager
+
+    # Schreibbares Verzeichnis für chromedriver-Cache (nicht SYSTEM-Profil)
+    os.environ["WDM_CACHE_PATH"] = "C:\\dcp_automatisierung\\wdm_cache"
 
     opts = Options()
     opts.add_argument("--headless")
@@ -603,10 +609,12 @@ def _erstelle_selenium_driver():
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--log-level=3")
-    return webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=opts
-    )
+
+    # Lock: nur ein Prozess darf chromedriver gleichzeitig initialisieren
+    with _selenium_lock:
+        driver_path = ChromeDriverManager().install()
+
+    return webdriver.Chrome(service=Service(driver_path), options=opts)
 
 
 def _doremi_login(driver, ip, user, passwd):
@@ -633,6 +641,29 @@ def _doremi_login(driver, ip, user, passwd):
     # Login-Button klicken
     driver.find_element(By.CSS_SELECTOR, "input[type='submit'], button[type='submit'], button").click()
     time.sleep(3)
+
+
+def _doremi_wechsle_zu_inhalt_frame(driver):
+    """Wechselt zum Inhalts-Frame falls Doremi Framesets nutzt.
+    Gibt True zurück wenn in Frame gewechselt wurde."""
+    from selenium.webdriver.common.by import By
+    driver.switch_to.default_content()
+    frames = driver.find_elements(By.TAG_NAME, "frame")
+    if not frames:
+        return False
+    # Inhalts-Frame finden: letzter Frame oder Frame mit passendem src
+    content_frame = frames[-1]
+    for fr in frames:
+        src = (fr.get_attribute("src") or "").lower()
+        if any(x in src for x in ("ingest", "main", "content", "body")):
+            content_frame = fr
+            break
+    try:
+        driver.switch_to.frame(content_frame)
+        time.sleep(2)
+        return True
+    except Exception:
+        return False
 
 
 def _ingest_starten(job_id):
@@ -668,24 +699,27 @@ def _ingest_starten(job_id):
         _doremi_login(driver, ip, user, passwd)
 
         dcp_gefunden = False
-        # 3 Versuche – Doremi kann nach FTP noch kurz brauchen zum Indexieren
         for versuch in range(3):
             driver.get(ingest_url)
-            wait = WebDriverWait(driver, 30)
+            time.sleep(5)
 
-            # "Local Storage" aus Dropdown wählen
+            # Doremi DCP2000 nutzt HTML-Framesets – zum Inhalts-Frame wechseln
+            _doremi_wechsle_zu_inhalt_frame(driver)
+
+            # "Local Storage" aus Dropdown wählen (alle Optionen prüfen)
             try:
-                dropdown_el = wait.until(
-                    EC.presence_of_element_located((By.TAG_NAME, "select"))
-                )
-                sel = Select(dropdown_el)
-                sel.select_by_visible_text("Local Storage")
-                time.sleep(8)  # Doremi lädt Liste nach Auswahl
+                sel_elemente = driver.find_elements(By.TAG_NAME, "select")
+                for sel_el in sel_elemente:
+                    sel_obj = Select(sel_el)
+                    for opt in sel_obj.options:
+                        if "local" in opt.text.lower() or "storage" in opt.text.lower():
+                            sel_obj.select_by_visible_text(opt.text)
+                            time.sleep(10)
+                            break
             except Exception:
                 time.sleep(5)
 
             # DCP-Checkbox in der Liste suchen und anhaken
-            # Doremi zeigt jedes DCP als Zeile mit Checkbox
             for element in driver.find_elements(By.CSS_SELECTOR, "tr, li, .dcp-item"):
                 if dcp_name.lower() in element.text.lower():
                     cbs = element.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
@@ -701,13 +735,14 @@ def _ingest_starten(job_id):
                 time.sleep(20)
 
         if not dcp_gefunden:
+            driver.switch_to.default_content()
             sichtbar = driver.find_element(By.TAG_NAME, "body").text[:400]
             raise RuntimeError(
                 f"DCP '{dcp_name}' nach 3 Versuchen nicht in Ingest-Liste.\n"
                 f"Doremi zeigt: {sichtbar}"
             )
 
-        # Globalen "Ingest >" Button klicken (wählt alle markierten DCPs)
+        # Globalen "Ingest >" Button klicken
         ingest_geklickt = False
         for btn in driver.find_elements(By.CSS_SELECTOR, "button, input[type='button'], input[type='submit']"):
             btn_text = (btn.text + " " + (btn.get_attribute("value") or "")).lower()
@@ -735,21 +770,28 @@ def _monitoring_ueberwachen(job_id):
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
+    monitor_url = (
+        f"http://{ip}/web/sys_control/index.php"
+        "?page=ingest_manager/ingest_monitor.php"
+    )
+
     ingest_fertig = False
     driver = _erstelle_selenium_driver()
     try:
         _doremi_login(driver, ip, user, passwd)
-
-        driver.get(
-            f"http://{ip}/web/sys_control/index.php"
-            "?page=ingest_manager/ingest_monitor.php"
-        )
+        driver.get(monitor_url)
+        time.sleep(3)
+        _doremi_wechsle_zu_inhalt_frame(driver)
 
         # Polling – max. 15 Minuten (180 × 5s)
         for _ in range(180):
             time.sleep(5)
             try:
                 driver.refresh()
+                time.sleep(2)
+                # Nach Refresh erneut Frame wechseln
+                _doremi_wechsle_zu_inhalt_frame(driver)
+
                 page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
 
                 # Nicht mehr in der Liste → Ingest abgeschlossen
@@ -850,7 +892,7 @@ def pruefe_update_ergebnis():
     except Exception:
         pass
 
-def pruefe_update():
+def pruefe_update(manuell=False):
     try:
         cfg        = lade_config()
         update_cfg = cfg.get("update", {})
@@ -859,14 +901,17 @@ def pruefe_update():
         base_url     = update_cfg.get("github_base_url", "")
 
         if not version_url or not manifest_url or not base_url:
-            telegram_bot.sende_nachricht("Update-URLs nicht konfiguriert.")
+            if manuell:
+                telegram_bot.sende_nachricht("Update-URLs nicht konfiguriert.")
             return
 
         github_version = urllib.request.urlopen(version_url, timeout=10).read().decode().strip()
         local_version  = lese_version()
 
         if github_version == local_version:
-            telegram_bot.sende_nachricht(f"Bereits aktuell: v{local_version}")
+            # Nur bei manuellem /update Rückmeldung geben – kein täglicher Spam
+            if manuell:
+                telegram_bot.sende_nachricht(f"Bereits aktuell: v{local_version}")
             return
 
         telegram_bot.sende_nachricht(
@@ -1027,7 +1072,7 @@ def bearbeite_befehl(text):
 
     elif low == "/update":
         telegram_bot.sende_nachricht("Suche nach Updates...")
-        threading.Thread(target=pruefe_update, daemon=True).start()
+        threading.Thread(target=pruefe_update, args=(True,), daemon=True).start()
 
     elif low == "/status":
         fehler  = job_manager.hole_fehler()
@@ -1094,6 +1139,9 @@ def bearbeite_befehl(text):
                 threading.Thread(
                     target=verarbeite_job, args=(j["id"], j["current_phase"]), daemon=True
                 ).start()
+
+    elif low == "/retry":
+        zeige_jobs()
 
     elif low.startswith("/retry "):
         job_id = cmd.split(maxsplit=1)[1].strip()

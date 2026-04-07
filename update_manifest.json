@@ -1,5 +1,5 @@
 {
-  "version": "2.14",
+  "version": "2.20",
   "files": [
     {"src": "main.py",                      "dest": "C:\\dcp_automatisierung\\main.py"},
     {"src": "updater.py",                   "dest": "C:\\dcp_automatisierung\\updater.py"},
