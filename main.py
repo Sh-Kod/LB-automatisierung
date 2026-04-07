@@ -117,6 +117,7 @@ def _scanne_fertige_dcps():
         return 0
 
     gefunden = 0
+    uebersprungen = []
     for eintrag in sorted(os.listdir(dcp_ausgabe)):
         if eintrag.startswith("_tmp_"):
             continue  # Laufende DCP-Erstellung überspringen
@@ -132,6 +133,7 @@ def _scanne_fertige_dcps():
             continue
         # Prüfe ob bereits ein aktiver/fehlerhafter Job läuft
         if job_manager.hat_job_fuer_dcp(eintrag):
+            uebersprungen.append(eintrag)
             continue
         # Job ab Phase 2 (Upload) erstellen
         job_id = job_manager.erstelle_job("", eintrag)
@@ -139,6 +141,12 @@ def _scanne_fertige_dcps():
             target=verarbeite_job, args=(job_id, 2), daemon=True
         ).start()
         gefunden += 1
+    if uebersprungen:
+        telegram_bot.sende_nachricht(
+            f"{len(uebersprungen)} DCP(s) übersprungen (Fehler-Job vorhanden):\n"
+            + "\n".join(f"  • {n}" for n in uebersprungen[:10])
+            + "\n/retry_alle zum Wiederholen"
+        )
     return gefunden
 
 
@@ -643,33 +651,99 @@ def _doremi_login(driver, ip, user, passwd):
     time.sleep(3)
 
 
-def _doremi_wechsle_zu_inhalt_frame(driver):
-    """Wechselt zum Inhalts-Frame falls Doremi Framesets nutzt.
-    Gibt True zurück wenn in Frame gewechselt wurde."""
+def _doremi_wechsle_zu_inhalt(driver):
+    """Sucht in frames UND iframes nach dem Inhaltsbereich.
+    Probiert jeden Frame durch bis Inhalte gefunden werden."""
     from selenium.webdriver.common.by import By
     driver.switch_to.default_content()
-    frames = driver.find_elements(By.TAG_NAME, "frame")
-    if not frames:
+    # Prüfe BEIDE Tag-Typen: <frame> (Frameset) und <iframe>
+    alle_frames = driver.find_elements(By.TAG_NAME, "frame")
+    alle_frames += driver.find_elements(By.TAG_NAME, "iframe")
+    if not alle_frames:
         return False
-    # Inhalts-Frame finden: letzter Frame oder Frame mit passendem src
-    content_frame = frames[-1]
-    for fr in frames:
-        src = (fr.get_attribute("src") or "").lower()
-        if any(x in src for x in ("ingest", "main", "content", "body")):
-            content_frame = fr
-            break
+    for fr in alle_frames:
+        try:
+            driver.switch_to.default_content()
+            driver.switch_to.frame(fr)
+            # Suche nach Inhalten die auf Ingest-Seite hindeuten
+            elems = driver.find_elements(By.TAG_NAME, "select")
+            elems += driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+            if elems:
+                return True
+            body = driver.find_element(By.TAG_NAME, "body").text.lower()
+            if any(x in body for x in ("local storage", "ingest scan")):
+                return True
+        except Exception:
+            continue
+    # Fallback: letzter Frame
     try:
-        driver.switch_to.frame(content_frame)
-        time.sleep(2)
+        driver.switch_to.default_content()
+        driver.switch_to.frame(alle_frames[-1])
         return True
     except Exception:
+        driver.switch_to.default_content()
         return False
+
+
+def _doremi_navigiere_zu_ingest(driver, ip):
+    """Navigiert zur Ingest-Scan-Seite. Probiert mehrere Wege:
+    1. Direkte PHP-URL (ohne Frameset)
+    2. Index.php mit page-Parameter
+    3. Klick-Navigation über Menü"""
+    from selenium.webdriver.common.by import By
+
+    # Weg 1: Direkte PHP-URL ohne Frameset-Wrapper
+    urls = [
+        f"http://{ip}/web/sys_control/ingest_manager/ingest_scan.php",
+        f"http://{ip}/web/sys_control/index.php?page=ingest_manager/ingest_scan.php",
+    ]
+    for url in urls:
+        try:
+            driver.get(url)
+            time.sleep(5)
+            # Prüfe ob Inhalte direkt sichtbar
+            sels = driver.find_elements(By.TAG_NAME, "select")
+            cbs = driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+            if sels or cbs:
+                return True
+            # Prüfe in Frames/Iframes
+            if _doremi_wechsle_zu_inhalt(driver):
+                sels = driver.find_elements(By.TAG_NAME, "select")
+                cbs = driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+                if sels or cbs:
+                    return True
+        except Exception:
+            continue
+
+    # Weg 2: Klick-Navigation – CONTROL → Ingest Scan
+    try:
+        driver.switch_to.default_content()
+        driver.get(f"http://{ip}/web/")
+        time.sleep(3)
+        _doremi_wechsle_zu_inhalt(driver)
+        links = driver.find_elements(By.TAG_NAME, "a")
+        for link in links:
+            if "control" in (link.text or "").lower():
+                link.click()
+                time.sleep(3)
+                break
+        _doremi_wechsle_zu_inhalt(driver)
+        links = driver.find_elements(By.TAG_NAME, "a")
+        for link in links:
+            lt = (link.text or "").lower()
+            if "ingest" in lt:
+                link.click()
+                time.sleep(5)
+                _doremi_wechsle_zu_inhalt(driver)
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _ingest_starten(job_id):
     from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait, Select
-    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.support.ui import Select
 
     job = job_manager.hole_job(job_id)
     if not job:
@@ -689,24 +763,16 @@ def _ingest_starten(job_id):
             f"FTP-Upload möglicherweise unvollständig."
         )
 
-    ingest_url = (
-        f"http://{ip}/web/sys_control/index.php"
-        "?page=ingest_manager/ingest_scan.php"
-    )
-
     driver = _erstelle_selenium_driver()
     try:
         _doremi_login(driver, ip, user, passwd)
 
         dcp_gefunden = False
         for versuch in range(3):
-            driver.get(ingest_url)
-            time.sleep(5)
+            # Multi-Strategie: direkte URL, Frames, Menü-Klicks
+            _doremi_navigiere_zu_ingest(driver, ip)
 
-            # Doremi DCP2000 nutzt HTML-Framesets – zum Inhalts-Frame wechseln
-            _doremi_wechsle_zu_inhalt_frame(driver)
-
-            # "Local Storage" aus Dropdown wählen (alle Optionen prüfen)
+            # "Local Storage" aus Dropdown wählen
             try:
                 sel_elemente = driver.find_elements(By.TAG_NAME, "select")
                 for sel_el in sel_elemente:
@@ -735,11 +801,12 @@ def _ingest_starten(job_id):
                 time.sleep(20)
 
         if not dcp_gefunden:
+            # HTML-Source für Debugging (nicht nur sichtbarer Text)
             driver.switch_to.default_content()
-            sichtbar = driver.find_element(By.TAG_NAME, "body").text[:400]
+            html_dump = driver.page_source[:600]
             raise RuntimeError(
                 f"DCP '{dcp_name}' nach 3 Versuchen nicht in Ingest-Liste.\n"
-                f"Doremi zeigt: {sichtbar}"
+                f"HTML: {html_dump}"
             )
 
         # Globalen "Ingest >" Button klicken
@@ -770,18 +837,25 @@ def _monitoring_ueberwachen(job_id):
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
-    monitor_url = (
-        f"http://{ip}/web/sys_control/index.php"
-        "?page=ingest_manager/ingest_monitor.php"
-    )
+    # URLs für Monitor-Seite (direkt + Frameset)
+    monitor_urls = [
+        f"http://{ip}/web/sys_control/ingest_manager/ingest_monitor.php",
+        f"http://{ip}/web/sys_control/index.php?page=ingest_manager/ingest_monitor.php",
+    ]
 
     ingest_fertig = False
     driver = _erstelle_selenium_driver()
     try:
         _doremi_login(driver, ip, user, passwd)
-        driver.get(monitor_url)
-        time.sleep(3)
-        _doremi_wechsle_zu_inhalt_frame(driver)
+
+        # Erste funktionierende URL nutzen
+        for url in monitor_urls:
+            driver.get(url)
+            time.sleep(3)
+            _doremi_wechsle_zu_inhalt(driver)
+            body = driver.find_element(By.TAG_NAME, "body").text.lower()
+            if "monitor" in body or "ingest" in body or dcp_name.lower() in body:
+                break
 
         # Polling – max. 15 Minuten (180 × 5s)
         for _ in range(180):
@@ -789,8 +863,7 @@ def _monitoring_ueberwachen(job_id):
             try:
                 driver.refresh()
                 time.sleep(2)
-                # Nach Refresh erneut Frame wechseln
-                _doremi_wechsle_zu_inhalt_frame(driver)
+                _doremi_wechsle_zu_inhalt(driver)
 
                 page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
 
