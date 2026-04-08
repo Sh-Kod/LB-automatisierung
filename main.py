@@ -597,6 +597,21 @@ def _ftp_ordner_loeschen(cfg, dcp_name):
         pass  # Best-Effort – kein harter Fehler
 
 
+def _ftp_schnell_pruefen(cfg, dcp_name):
+    """Einmaliger FTP-Check ob ASSETMAP in /gui vorhanden. Kein Warten."""
+    import ftplib
+    try:
+        with ftplib.FTP(timeout=15) as ftp:
+            ftp.connect(cfg["doremi"]["ip"], 21)
+            ftp.login(cfg["doremi"]["ftp_user"], cfg["doremi"]["ftp_pass"])
+            ftp.set_pasv(True)
+            ftp.cwd(f"/gui/{dcp_name}")
+            dateien = ftp.nlst()
+            return any("ASSETMAP" in d.upper() for d in dateien)
+    except Exception:
+        return False
+
+
 def _ingest_starten(job_id):
     import base64
     job = job_manager.hole_job(job_id)
@@ -608,6 +623,12 @@ def _ingest_starten(job_id):
     user     = cfg["doremi"]["web_user"]
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
+
+    # Schnell-Check: ist DCP überhaupt in /gui?
+    # Falls nicht → sofort neu hochladen statt 20 Min warten
+    if not _ftp_schnell_pruefen(cfg, dcp_name):
+        telegram_bot.sende_nachricht(f"DCP '{dcp_name}' nicht in /gui – lade neu hoch...")
+        _upload_durchfuehren(job_id)
 
     # FTP-Verify: warten bis DCP vollständig auf Doremi angekommen ist
     bereit = _warte_bis_ftp_bereit(cfg, dcp_name, timeout_min=20)
