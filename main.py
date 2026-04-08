@@ -1061,7 +1061,8 @@ def bearbeite_befehl(text):
 
 if __name__ == "__main__":
     queue_manager.naming_zuruecksetzen()
-    job_manager.bereinige_alte_jobs(tage=7)  # Stale Einträge aus jobs.json entfernen
+    job_manager.setze_laufende_jobs_zurueck()  # Nach Neustart: hängende Jobs retrybar machen
+    job_manager.bereinige_alte_jobs(tage=7)    # Stale Einträge aus jobs.json entfernen
 
     cfg = lade_config()
     intervall        = cfg.get("zeitplan", {}).get("intervall_minuten", 60)

@@ -222,6 +222,25 @@ def _sende_einzeln(job):
     pass
 
 
+def setze_laufende_jobs_zurueck():
+    """Setzt alle 'running'-Jobs auf 'error' zurück.
+    Beim Service-Start aufrufen: nach Absturz/Neustart können keine Jobs
+    wirklich noch laufen – sie werden sonst nie mehr retrybar."""
+    with _lock:
+        data = _lade()
+        geaendert = 0
+        for job in data["jobs"]:
+            if job.get("current_status") == "running":
+                job["current_status"] = "error"
+                job["retryable"] = True
+                if not job.get("fehler_text"):
+                    job["fehler_text"] = "Service-Neustart während Job lief"
+                geaendert += 1
+        if geaendert:
+            _speichere(data)
+    return geaendert
+
+
 def bereinige_alte_jobs(tage=7):
     """Entfernt abgeschlossene und fehlerhafte Jobs die älter als X Tage sind."""
     grenze = datetime.now() - timedelta(days=tage)
