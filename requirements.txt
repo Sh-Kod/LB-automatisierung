@@ -3,3 +3,5 @@ pyyaml
 schedule
 pillow
 pytesseract
+selenium
+webdriver-manager

@@ -613,7 +613,14 @@ def _ftp_schnell_pruefen(cfg, dcp_name):
 
 
 def _ingest_starten(job_id):
-    import base64
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait, Select
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    from selenium.common.exceptions import TimeoutException
+
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
@@ -638,26 +645,109 @@ def _ingest_starten(job_id):
             f"FTP-Upload möglicherweise unvollständig."
         )
 
-    time.sleep(5)
-    # HTTP POST an Doremi – löst Ingest aus (Fehler ignorieren:
-    # FTP-Upload in /gui triggert Ingest meist automatisch)
-    creds     = base64.b64encode(f"{user}:{passwd}".encode()).decode()
-    post_data = f"content={dcp_name}".encode()
-    req = urllib.request.Request(
-        f"http://{ip}/Ingest/",
-        data=post_data, method="POST"
-    )
-    req.add_header("Authorization", f"Basic {creds}")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    # ChromeDriver einrichten
     try:
-        with urllib.request.urlopen(req, timeout=30):
-            pass
+        from webdriver_manager.chrome import ChromeDriverManager
+        service = ChromeService(ChromeDriverManager().install())
     except Exception:
-        pass  # FTP-Upload löst Ingest automatisch aus – POST ist Best-Effort
+        service = ChromeService()
+
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+
+    scan_url = (
+        f"http://{ip}/web/sys_control/index.php"
+        f"?page=ingest_manager/ingest_scan.php"
+    )
+
+    driver = None
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(60)
+        wait = WebDriverWait(driver, 30)
+
+        # Schritt 1: Ingest-Scan-Seite öffnen
+        driver.get(scan_url)
+
+        # Schritt 2: Login falls Formular erscheint
+        try:
+            user_feld = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.XPATH,
+                    "//*[@name='username' or @name='login' or @id='username']"
+                ))
+            )
+            user_feld.clear()
+            user_feld.send_keys(user)
+            driver.find_element(By.XPATH,
+                "//*[@name='password' or @id='password']"
+            ).send_keys(passwd)
+            driver.find_element(By.XPATH,
+                "//input[@type='submit'] | //button[@type='submit']"
+            ).click()
+            time.sleep(2)
+            # Nach Login zur Zielseite navigieren
+            driver.get(scan_url)
+        except TimeoutException:
+            pass  # Bereits eingeloggt – kein Formular erschienen
+
+        # Schritt 3: In iframe "contentFrame" wechseln
+        wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "contentFrame")))
+
+        # Schritt 4: "Local Storage" (value="localhost") auswählen
+        select_el = wait.until(EC.presence_of_element_located((By.ID, "storageSelect")))
+        Select(select_el).select_by_value("localhost")
+
+        # Schritt 5: Warten bis Scan abgeschlossen (loadingDiv weg + DCP sichtbar)
+        try:
+            wait.until(EC.invisibility_of_element_located((By.ID, "loadingDiv")))
+        except TimeoutException:
+            pass
+        try:
+            wait.until(EC.presence_of_element_located(
+                (By.XPATH, f"//*[contains(text(),'{dcp_name}')]")
+            ))
+        except TimeoutException:
+            raise RuntimeError(
+                f"DCP '{dcp_name}' erscheint nicht in Ingest-Scan (Local Storage). "
+                f"FTP-Upload prüfen."
+            )
+
+        # Schritt 6: "Select all" klicken
+        wait.until(EC.element_to_be_clickable((By.ID, "sAll"))).click()
+        time.sleep(1)
+
+        # Schritt 7: Warten bis Ingest-Button aktiviert (disabled-Attribut entfernt)
+        try:
+            wait.until(
+                lambda d: d.find_element(By.ID, "ingestBtn").get_attribute("disabled") is None
+            )
+        except TimeoutException:
+            raise RuntimeError(
+                f"Ingest-Button bleibt inaktiv – kein ingestierbarer Inhalt "
+                f"für '{dcp_name}' nach Select All."
+            )
+
+        # Schritt 8: Ingest starten
+        driver.find_element(By.ID, "ingestBtn").click()
+
+    finally:
+        if driver:
+            driver.quit()
 
 
 def _monitoring_ueberwachen(job_id):
-    import base64
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    from selenium.common.exceptions import TimeoutException, WebDriverException
+
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
@@ -668,25 +758,98 @@ def _monitoring_ueberwachen(job_id):
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
-    creds = base64.b64encode(f"{user}:{passwd}".encode()).decode()
+    # ChromeDriver einrichten
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+        service = ChromeService(ChromeDriverManager().install())
+    except Exception:
+        service = ChromeService()
 
-    for _ in range(36):  # max 3 Minuten (36 × 5s)
-        time.sleep(5)
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+
+    monitor_url = (
+        f"http://{ip}/web/sys_control/index.php"
+        f"?page=ingest_manager/ingest_monitor.php"
+    )
+
+    driver = None
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(60)
+        wait = WebDriverWait(driver, 30)
+
+        # Schritt 1: Ingest-Monitor-Seite öffnen
+        driver.get(monitor_url)
+
+        # Schritt 2: Login falls Formular erscheint
         try:
-            req = urllib.request.Request(f"http://{ip}/ContentInfo/?name={dcp_name}")
-            req.add_header("Authorization", f"Basic {creds}")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                body = resp.read().decode("utf-8", errors="replace").lower()
-                if dcp_name.lower() in body and any(
-                    w in body for w in ("complete", "ready", "ok", "ingested")
-                ):
-                    break
-        except Exception:
-            pass
-    # Timeout ist kein Fehler – DCP wurde hochgeladen, Ingest läuft
+            user_feld = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.XPATH,
+                    "//*[@name='username' or @name='login' or @id='username']"
+                ))
+            )
+            user_feld.clear()
+            user_feld.send_keys(user)
+            driver.find_element(By.XPATH,
+                "//*[@name='password' or @id='password']"
+            ).send_keys(passwd)
+            driver.find_element(By.XPATH,
+                "//input[@type='submit'] | //button[@type='submit']"
+            ).click()
+            time.sleep(2)
+            driver.get(monitor_url)
+        except TimeoutException:
+            pass  # Bereits eingeloggt
 
-    # FTP aufräumen + DCP ins Archiv verschieben
+        # Schritt 3: Monitoring-Schleife – max. 30 Minuten
+        # Abbruch wenn "Finished"-Spalte unseres DCP einen echten Zeitstempel hat
+        deadline = time.time() + 30 * 60
+        fertig   = False
+
+        while time.time() < deadline and not fertig:
+            try:
+                driver.switch_to.default_content()
+                wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "contentFrame")))
+
+                # Alle Tabellenzeilen finden die unseren DCP-Namen enthalten
+                zeilen = driver.find_elements(
+                    By.XPATH, f"//tr[.//td[contains(text(),'{dcp_name}')]]"
+                )
+                for zeile in zeilen:
+                    zellen = zeile.find_elements(By.TAG_NAME, "td")
+                    # Tabellenspalten: Status | Beschreibung | Scheduled | Started | Finished
+                    if len(zellen) >= 5:
+                        finished_text = zellen[-1].text.strip()
+                        # Fertig wenn Finished-Spalte echten Zeitstempel hat (nicht "-" oder leer)
+                        if finished_text and finished_text != "-" and len(finished_text) > 5:
+                            fertig = True
+                            break
+
+            except (TimeoutException, WebDriverException):
+                pass
+
+            if not fertig:
+                time.sleep(15)
+                try:
+                    driver.switch_to.default_content()
+                    driver.refresh()
+                    time.sleep(3)
+                except Exception:
+                    pass
+
+    finally:
+        if driver:
+            driver.quit()
+
+    # FTP-Ordner auf Doremi aufräumen
     _ftp_ordner_loeschen(cfg, dcp_name)
+
+    # DCP lokal ins Archiv verschieben
     try:
         dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
         if os.path.exists(dcp_pfad_lokal):
