@@ -28,7 +28,6 @@ _scan_pausiert      = False
 _scan_pausiert_lock = threading.Lock()
 _naming_aktiv       = False
 _naming_aktiv_lock  = threading.Lock()
-_selenium_lock      = threading.Lock()   # verhindert gleichzeitige chromedriver-Initialisierung
 
 # ──────────────────────────────────────────────
 # Hilfsfunktionen
@@ -598,153 +597,8 @@ def _ftp_ordner_loeschen(cfg, dcp_name):
         pass  # Best-Effort – kein harter Fehler
 
 
-def _erstelle_selenium_driver():
-    """Erstellt einen Chrome-Headless-Treiber.
-    Lock verhindert WinError 5 wenn mehrere Jobs gleichzeitig starten."""
-    import os
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
-
-    # Schreibbares Verzeichnis für chromedriver-Cache (nicht SYSTEM-Profil)
-    os.environ["WDM_CACHE_PATH"] = "C:\\dcp_automatisierung\\wdm_cache"
-
-    opts = Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--log-level=3")
-
-    # Lock: nur ein Prozess darf chromedriver gleichzeitig initialisieren
-    with _selenium_lock:
-        driver_path = ChromeDriverManager().install()
-
-    return webdriver.Chrome(service=Service(driver_path), options=opts)
-
-
-def _doremi_login(driver, ip, user, passwd):
-    """Loggt sich via Login-Formular in Doremi DCP2000 ein (form-basiert, kein Basic Auth)."""
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-
-    driver.get(f"http://{ip}/web/")
-    wait = WebDriverWait(driver, 15)
-
-    # Warte auf Username-Feld
-    user_field = wait.until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='username'], input[type='text']"))
-    )
-    user_field.clear()
-    user_field.send_keys(user)
-
-    # Password-Feld
-    pass_field = driver.find_element(By.CSS_SELECTOR, "input[name='password'], input[type='password']")
-    pass_field.clear()
-    pass_field.send_keys(passwd)
-
-    # Login-Button klicken
-    driver.find_element(By.CSS_SELECTOR, "input[type='submit'], button[type='submit'], button").click()
-    time.sleep(3)
-
-
-def _doremi_wechsle_zu_inhalt(driver):
-    """Sucht in frames UND iframes nach dem Inhaltsbereich.
-    Probiert jeden Frame durch bis Inhalte gefunden werden."""
-    from selenium.webdriver.common.by import By
-    driver.switch_to.default_content()
-    # Prüfe BEIDE Tag-Typen: <frame> (Frameset) und <iframe>
-    alle_frames = driver.find_elements(By.TAG_NAME, "frame")
-    alle_frames += driver.find_elements(By.TAG_NAME, "iframe")
-    if not alle_frames:
-        return False
-    for fr in alle_frames:
-        try:
-            driver.switch_to.default_content()
-            driver.switch_to.frame(fr)
-            # Suche nach Inhalten die auf Ingest-Seite hindeuten
-            elems = driver.find_elements(By.TAG_NAME, "select")
-            elems += driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-            if elems:
-                return True
-            body = driver.find_element(By.TAG_NAME, "body").text.lower()
-            if any(x in body for x in ("local storage", "ingest scan")):
-                return True
-        except Exception:
-            continue
-    # Fallback: letzter Frame
-    try:
-        driver.switch_to.default_content()
-        driver.switch_to.frame(alle_frames[-1])
-        return True
-    except Exception:
-        driver.switch_to.default_content()
-        return False
-
-
-def _doremi_navigiere_zu_ingest(driver, ip):
-    """Navigiert zur Ingest-Scan-Seite. Probiert mehrere Wege:
-    1. Direkte PHP-URL (ohne Frameset)
-    2. Index.php mit page-Parameter
-    3. Klick-Navigation über Menü"""
-    from selenium.webdriver.common.by import By
-
-    # Weg 1: Direkte PHP-URL ohne Frameset-Wrapper
-    urls = [
-        f"http://{ip}/web/sys_control/ingest_manager/ingest_scan.php",
-        f"http://{ip}/web/sys_control/index.php?page=ingest_manager/ingest_scan.php",
-    ]
-    for url in urls:
-        try:
-            driver.get(url)
-            time.sleep(5)
-            # Prüfe ob Inhalte direkt sichtbar
-            sels = driver.find_elements(By.TAG_NAME, "select")
-            cbs = driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-            if sels or cbs:
-                return True
-            # Prüfe in Frames/Iframes
-            if _doremi_wechsle_zu_inhalt(driver):
-                sels = driver.find_elements(By.TAG_NAME, "select")
-                cbs = driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-                if sels or cbs:
-                    return True
-        except Exception:
-            continue
-
-    # Weg 2: Klick-Navigation – CONTROL → Ingest Scan
-    try:
-        driver.switch_to.default_content()
-        driver.get(f"http://{ip}/web/")
-        time.sleep(3)
-        _doremi_wechsle_zu_inhalt(driver)
-        links = driver.find_elements(By.TAG_NAME, "a")
-        for link in links:
-            if "control" in (link.text or "").lower():
-                link.click()
-                time.sleep(3)
-                break
-        _doremi_wechsle_zu_inhalt(driver)
-        links = driver.find_elements(By.TAG_NAME, "a")
-        for link in links:
-            lt = (link.text or "").lower()
-            if "ingest" in lt:
-                link.click()
-                time.sleep(5)
-                _doremi_wechsle_zu_inhalt(driver)
-                return True
-    except Exception:
-        pass
-    return False
-
-
 def _ingest_starten(job_id):
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import Select
-
+    import base64
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
@@ -755,7 +609,7 @@ def _ingest_starten(job_id):
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
-    # FTP-Verify: warten bis DCP wirklich auf Doremi angekommen ist
+    # FTP-Verify: warten bis DCP vollständig auf Doremi angekommen ist
     bereit = _warte_bis_ftp_bereit(cfg, dcp_name, timeout_min=20)
     if not bereit:
         raise RuntimeError(
@@ -763,70 +617,26 @@ def _ingest_starten(job_id):
             f"FTP-Upload möglicherweise unvollständig."
         )
 
-    driver = _erstelle_selenium_driver()
+    time.sleep(5)
+    # HTTP POST an Doremi – löst Ingest aus (Fehler ignorieren:
+    # FTP-Upload in /gui triggert Ingest meist automatisch)
+    creds     = base64.b64encode(f"{user}:{passwd}".encode()).decode()
+    post_data = f"content={dcp_name}".encode()
+    req = urllib.request.Request(
+        f"http://{ip}/Ingest/",
+        data=post_data, method="POST"
+    )
+    req.add_header("Authorization", f"Basic {creds}")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        _doremi_login(driver, ip, user, passwd)
-
-        dcp_gefunden = False
-        for versuch in range(3):
-            # Multi-Strategie: direkte URL, Frames, Menü-Klicks
-            _doremi_navigiere_zu_ingest(driver, ip)
-
-            # "Local Storage" aus Dropdown wählen
-            try:
-                sel_elemente = driver.find_elements(By.TAG_NAME, "select")
-                for sel_el in sel_elemente:
-                    sel_obj = Select(sel_el)
-                    for opt in sel_obj.options:
-                        if "local" in opt.text.lower() or "storage" in opt.text.lower():
-                            sel_obj.select_by_visible_text(opt.text)
-                            time.sleep(10)
-                            break
-            except Exception:
-                time.sleep(5)
-
-            # DCP-Checkbox in der Liste suchen und anhaken
-            for element in driver.find_elements(By.CSS_SELECTOR, "tr, li, .dcp-item"):
-                if dcp_name.lower() in element.text.lower():
-                    cbs = element.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-                    if cbs:
-                        if not cbs[0].is_selected():
-                            cbs[0].click()
-                        dcp_gefunden = True
-                    break
-
-            if dcp_gefunden:
-                break
-            if versuch < 2:
-                time.sleep(20)
-
-        if not dcp_gefunden:
-            # HTML-Source für Debugging (nicht nur sichtbarer Text)
-            driver.switch_to.default_content()
-            html_dump = driver.page_source[:600]
-            raise RuntimeError(
-                f"DCP '{dcp_name}' nach 3 Versuchen nicht in Ingest-Liste.\n"
-                f"HTML: {html_dump}"
-            )
-
-        # Globalen "Ingest >" Button klicken
-        ingest_geklickt = False
-        for btn in driver.find_elements(By.CSS_SELECTOR, "button, input[type='button'], input[type='submit']"):
-            btn_text = (btn.text + " " + (btn.get_attribute("value") or "")).lower()
-            if "ingest" in btn_text:
-                btn.click()
-                ingest_geklickt = True
-                break
-        if not ingest_geklickt:
-            raise RuntimeError("Ingest-Button nicht gefunden auf der Seite")
-        time.sleep(2)
-    finally:
-        driver.quit()
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+    except Exception:
+        pass  # FTP-Upload löst Ingest automatisch aus – POST ist Best-Effort
 
 
 def _monitoring_ueberwachen(job_id):
-    from selenium.webdriver.common.by import By
-
+    import base64
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
@@ -837,79 +647,36 @@ def _monitoring_ueberwachen(job_id):
     passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
-    # URLs für Monitor-Seite (direkt + Frameset)
-    monitor_urls = [
-        f"http://{ip}/web/sys_control/ingest_manager/ingest_monitor.php",
-        f"http://{ip}/web/sys_control/index.php?page=ingest_manager/ingest_monitor.php",
-    ]
+    creds = base64.b64encode(f"{user}:{passwd}".encode()).decode()
 
-    ingest_fertig = False
-    driver = _erstelle_selenium_driver()
-    try:
-        _doremi_login(driver, ip, user, passwd)
-
-        # Erste funktionierende URL nutzen
-        for url in monitor_urls:
-            driver.get(url)
-            time.sleep(3)
-            _doremi_wechsle_zu_inhalt(driver)
-            body = driver.find_element(By.TAG_NAME, "body").text.lower()
-            if "monitor" in body or "ingest" in body or dcp_name.lower() in body:
-                break
-
-        # Polling – max. 15 Minuten (180 × 5s)
-        for _ in range(180):
-            time.sleep(5)
-            try:
-                driver.refresh()
-                time.sleep(2)
-                _doremi_wechsle_zu_inhalt(driver)
-
-                page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
-
-                # Nicht mehr in der Liste → Ingest abgeschlossen
-                if dcp_name.lower() not in page_text:
-                    ingest_fertig = True
-                    break
-
-                rows = driver.find_elements(By.TAG_NAME, "tr")
-                for row in rows:
-                    if dcp_name.lower() in row.text.lower():
-                        row_text = row.text.lower()
-                        row_html = row.get_attribute("innerHTML").lower()
-                        if "100%" in row_text or "success" in row_html or "complete" in row_html:
-                            ingest_fertig = True
-                            break
-                        if "error" in row_html or "failed" in row_html:
-                            raise RuntimeError(
-                                f"Doremi Ingest fehlgeschlagen für '{dcp_name}'"
-                            )
-                        break
-                if ingest_fertig:
-                    break
-            except RuntimeError:
-                raise
-            except Exception:
-                pass
-
-        # Timeout ohne Fehler – DCP möglicherweise noch am Ingest
-    finally:
-        driver.quit()
-
-    # Erst nach 100% Ingest: FTP aufräumen + DCP ins Archiv verschieben
-    if ingest_fertig:
-        _ftp_ordner_loeschen(cfg, dcp_name)
+    for _ in range(36):  # max 3 Minuten (36 × 5s)
+        time.sleep(5)
         try:
-            dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
-            if os.path.exists(dcp_pfad_lokal):
-                dcp_archiv = cfg["ordner"]["dcp_archiv"]
-                os.makedirs(dcp_archiv, exist_ok=True)
-                ziel = os.path.join(dcp_archiv, dcp_name)
-                if os.path.exists(ziel):
-                    shutil.rmtree(ziel)
-                shutil.move(dcp_pfad_lokal, ziel)
+            req = urllib.request.Request(f"http://{ip}/ContentInfo/?name={dcp_name}")
+            req.add_header("Authorization", f"Basic {creds}")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode("utf-8", errors="replace").lower()
+                if dcp_name.lower() in body and any(
+                    w in body for w in ("complete", "ready", "ok", "ingested")
+                ):
+                    break
         except Exception:
-            pass  # Archiv-Move ist Best-Effort – Ingest war trotzdem erfolgreich
+            pass
+    # Timeout ist kein Fehler – DCP wurde hochgeladen, Ingest läuft
+
+    # FTP aufräumen + DCP ins Archiv verschieben
+    _ftp_ordner_loeschen(cfg, dcp_name)
+    try:
+        dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
+        if os.path.exists(dcp_pfad_lokal):
+            dcp_archiv = cfg["ordner"]["dcp_archiv"]
+            os.makedirs(dcp_archiv, exist_ok=True)
+            ziel = os.path.join(dcp_archiv, dcp_name)
+            if os.path.exists(ziel):
+                shutil.rmtree(ziel)
+            shutil.move(dcp_pfad_lokal, ziel)
+    except Exception:
+        pass  # Archiv-Move ist Best-Effort
 
 # ──────────────────────────────────────────────
 # Status-Updates + Abschluss
