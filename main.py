@@ -117,7 +117,8 @@ def _scanne_fertige_dcps():
         return 0
 
     gefunden = 0
-    uebersprungen = []
+    in_bearbeitung = []
+    fehler_jobs = []
     for eintrag in sorted(os.listdir(dcp_ausgabe)):
         if eintrag.startswith("_tmp_"):
             continue  # Laufende DCP-Erstellung überspringen
@@ -132,8 +133,14 @@ def _scanne_fertige_dcps():
         if not hat_assetmap:
             continue
         # Prüfe ob bereits ein aktiver/fehlerhafter Job läuft
-        if job_manager.hat_job_fuer_dcp(eintrag):
-            uebersprungen.append(eintrag)
+        aktive = [j for j in job_manager.hole_aktive() if j.get("final_name") == eintrag]
+        retry  = [j for j in job_manager.hole_retry_pending() if j.get("final_name") == eintrag]
+        fehler = [j for j in job_manager.hole_fehler() if j.get("final_name") == eintrag]
+        if aktive or retry:
+            in_bearbeitung.append(eintrag)
+            continue
+        if fehler:
+            fehler_jobs.append(eintrag)
             continue
         # Job ab Phase 2 (Upload) erstellen
         job_id = job_manager.erstelle_job("", eintrag)
@@ -141,10 +148,15 @@ def _scanne_fertige_dcps():
             target=verarbeite_job, args=(job_id, 2), daemon=True
         ).start()
         gefunden += 1
-    if uebersprungen:
+    if in_bearbeitung:
         telegram_bot.sende_nachricht(
-            f"{len(uebersprungen)} DCP(s) übersprungen (Fehler-Job vorhanden):\n"
-            + "\n".join(f"  • {n}" for n in uebersprungen[:10])
+            f"{len(in_bearbeitung)} DCP(s) werden gerade verarbeitet:\n"
+            + "\n".join(f"  ⏳ {n}" for n in in_bearbeitung[:10])
+        )
+    if fehler_jobs:
+        telegram_bot.sende_nachricht(
+            f"{len(fehler_jobs)} DCP(s) mit Fehler:\n"
+            + "\n".join(f"  • {n}" for n in fehler_jobs[:10])
             + "\n/retry_alle zum Wiederholen"
         )
     return gefunden
@@ -643,6 +655,9 @@ def _ingest_starten(job_id):
 
     # Job-ID für Phase 5 (Monitoring) speichern
     job_manager.speichere_ingest_id(job_id, ingest_job_id)
+    telegram_bot.sende_nachricht(
+        f"Ingest gestartet: {dcp_name}\nDoremi job_id={ingest_job_id} – warte auf Abschluss..."
+    )
 
 
 def _monitoring_ueberwachen(job_id):

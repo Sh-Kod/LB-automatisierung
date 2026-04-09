@@ -149,6 +149,11 @@ def hole_aktive():
         data = _lade()
         return [j for j in data["jobs"] if j["current_status"] == "running"]
 
+def hole_retry_pending():
+    with _lock:
+        data = _lade()
+        return [j for j in data["jobs"] if j["current_status"] == "retry_pending"]
+
 def retry_job(job_id):
     """Setzt einen Fehler-Job auf retry_pending ab der richtigen Phase. Gibt Job-Dict zurueck."""
     with _lock:
