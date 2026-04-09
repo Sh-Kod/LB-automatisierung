@@ -1154,6 +1154,25 @@ def bearbeite_befehl(text):
             msg += f"IngestList: FEHLER → {e}\n"
         telegram_bot.sende_nachricht(msg)
 
+    elif low == "/doremi_ingest_scan":
+        cfg = lade_config()
+        ip  = cfg.get("doremi", {}).get("ip", "?")
+        from modules import doremi_api
+        telegram_bot.sende_nachricht(f"Scanne Ingest-Jobs (job_id 0..99) auf {ip}...")
+        gefunden = doremi_api.suche_aktive_ingest_job(ip, max_scan=99)
+        if gefunden:
+            jid, sc, sn = gefunden
+            telegram_bot.sende_nachricht(
+                f"Aktiver Ingest-Job gefunden!\n"
+                f"job_id = {jid}\n"
+                f"Status = {sn} ({sc})"
+            )
+        else:
+            telegram_bot.sende_nachricht(
+                "Kein aktiver Ingest-Job (pending/running/scheduled)\n"
+                "in job_id 0..99 gefunden."
+            )
+
     elif low == "/pause":
         pausiert = toggle_pause()
         if pausiert:
@@ -1187,6 +1206,7 @@ def bearbeite_befehl(text):
             f"/pause               Scan pausieren\n"
             f"/neustart /restart   Service neu starten\n"
             f"/doremi_test         Doremi TCP-Verbindung testen\n"
+            f"/doremi_ingest_scan  Aktive Ingest-Jobs suchen\n"
             f"{t}"
         )
 
