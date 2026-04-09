@@ -144,28 +144,30 @@ def _verbinde(ip):
 # Öffentliche API
 # ──────────────────────────────────────────────
 
-def ingest_starten(ip, dcp_name):
+def ingest_starten(ip, assetmap_pfad):
     """
     Startet Ingest auf dem Doremi via TCP API.
 
-    Voraussetzung: DCP wurde bereits per FTP nach /gui/{dcp_name}/ hochgeladen.
+    assetmap_pfad: vollständiger Pfad zur ASSETMAP-Datei auf dem Doremi-Filesystem,
+                   z.B. '/gui/MEIN_DCP/ASSETMAP.xml'
+                   Konfigurierbar über doremi.content_path in config.yaml.
 
     Gibt die Ingest-Job-ID zurück (int).
     Wirft RuntimeError wenn der Ingest nicht gestartet werden konnte.
-
-    Payload: Pfad zur ASSETMAP.xml als UTF-8 String (kein XML-Wrapper).
     """
-    pfad = f"/gui/{dcp_name}/ASSETMAP.xml"
-    log.info(f"[Doremi API] IngestAddJob für '{dcp_name}' – Pfad: {pfad}")
+    payload_bytes = assetmap_pfad.encode("utf-8")
+    log.info(
+        f"[Doremi API] IngestAddJob – Pfad: {assetmap_pfad} "
+        f"(hex: {payload_bytes.hex()})"
+    )
 
-    payload = pfad.encode("utf-8")
-    nachricht, req_id = _baue_nachricht(CMD_INGEST_ADD_JOB, payload)
+    nachricht, req_id = _baue_nachricht(CMD_INGEST_ADD_JOB, payload_bytes)
 
     with _verbinde(ip) as sock:
         sock.sendall(nachricht)
         cmd_key, resp_payload = _lese_antwort(sock)
 
-    log.debug(f"[Doremi API] IngestAddJob Response-Payload (hex): {resp_payload.hex()}")
+    log.info(f"[Doremi API] IngestAddJob Response (hex): {resp_payload.hex()}")
 
     if cmd_key != RESP_INGEST_ADD_JOB:
         raise RuntimeError(

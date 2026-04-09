@@ -627,6 +627,25 @@ def _ftp_schnell_pruefen(cfg, dcp_name):
         return False
 
 
+def _ftp_assetmap_name(cfg, dcp_name):
+    """Gibt den genauen ASSETMAP-Dateinamen im DCP-Verzeichnis zurück.
+    Erkennt ASSETMAP.xml, ASSETMAP.XML, ASSETMAP etc. dynamisch."""
+    import ftplib
+    try:
+        with ftplib.FTP(timeout=15) as ftp:
+            ftp.connect(cfg["doremi"]["ip"], 21)
+            ftp.login(cfg["doremi"]["ftp_user"], cfg["doremi"]["ftp_pass"])
+            ftp.set_pasv(True)
+            ftp.cwd(f"/gui/{dcp_name}")
+            dateien = ftp.nlst()
+            for d in dateien:
+                if "ASSETMAP" in d.upper():
+                    return d
+    except Exception:
+        pass
+    return None
+
+
 def _ingest_starten(job_id):
     job = job_manager.hole_job(job_id)
     if not job:
@@ -635,6 +654,10 @@ def _ingest_starten(job_id):
     cfg      = lade_config()
     ip       = cfg["doremi"]["ip"]
     dcp_name = job["final_name"]
+
+    # Pfad-Prefix: konfigurierbar in config.yaml unter doremi.content_path
+    # Default: /gui (entspricht dem FTP-Upload-Pfad)
+    content_path = cfg.get("doremi", {}).get("content_path", "/gui")
 
     # Schnell-Check: ist DCP überhaupt in /gui?
     if not _ftp_schnell_pruefen(cfg, dcp_name):
@@ -649,9 +672,19 @@ def _ingest_starten(job_id):
             f"FTP-Upload möglicherweise unvollständig."
         )
 
+    # Exakten ASSETMAP-Dateinamen via FTP ermitteln (statt .xml hardcoden)
+    assetmap_name = _ftp_assetmap_name(cfg, dcp_name)
+    if not assetmap_name:
+        raise RuntimeError(
+            f"Kein ASSETMAP-File in /gui/{dcp_name}/ gefunden. "
+            f"FTP-Upload möglicherweise unvollständig."
+        )
+
+    assetmap_pfad = f"{content_path}/{dcp_name}/{assetmap_name}"
+
     # Ingest via nativer TCP API (Port 11730) starten
     from modules import doremi_api
-    ingest_job_id = doremi_api.ingest_starten(ip, dcp_name)
+    ingest_job_id = doremi_api.ingest_starten(ip, assetmap_pfad)
 
     # Job-ID für Phase 5 (Monitoring) speichern
     job_manager.speichere_ingest_id(job_id, ingest_job_id)
