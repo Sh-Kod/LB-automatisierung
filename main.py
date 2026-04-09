@@ -670,14 +670,12 @@ def _monitoring_ueberwachen(job_id):
     dcp_name      = job["final_name"]
     ingest_job_id = job.get("ingest_job_id")
 
-    if ingest_job_id is None:
-        # Kein job_id vorhanden (z.B. nach Retry ohne neue Ingest-Phase)
-        # Kurz warten und weitermachen – Ingest läuft möglicherweise schon
-        import logging
-        logging.getLogger("dcp_automatisierung").warning(
-            f"[Monitoring] Kein ingest_job_id für '{dcp_name}' – warte 3 Min als Fallback"
+    if ingest_job_id is None or ingest_job_id == 0:
+        # Kein gültiger job_id – Ingest wurde nie korrekt gestartet
+        raise RuntimeError(
+            f"Kein gültiger Ingest-Job für '{dcp_name}' (ingest_job_id={ingest_job_id}). "
+            f"Bitte Ingest erneut starten (/retry)."
         )
-        time.sleep(180)
     else:
         from modules import doremi_api
         deadline = time.time() + 30 * 60   # max 30 Minuten

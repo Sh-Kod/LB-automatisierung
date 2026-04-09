@@ -154,16 +154,29 @@ def hole_retry_pending():
         data = _lade()
         return [j for j in data["jobs"] if j["current_status"] == "retry_pending"]
 
+def _berechne_retry_phase(job):
+    """Berechnet ab welcher Phase ein Job wiederholt werden soll.
+    Wenn ingest_job_id=0 (fehlgeschlagener Ingest) wird Phase 3 erzwungen."""
+    if job.get("error_phase") == 1:
+        return 1
+    last = job.get("last_success_phase") or 0
+    phase = max(1, last + 1)
+    # Sonderfall: ingest_job_id=0 bedeutet Ingest nie korrekt gestartet.
+    # Auch wenn last_success_phase=3, muss Ingest (Phase 3) wiederholt werden.
+    if job.get("ingest_job_id") == 0 and phase >= 4:
+        return 3
+    return phase
+
+
 def retry_job(job_id):
     """Setzt einen Fehler-Job auf retry_pending ab der richtigen Phase. Gibt Job-Dict zurueck."""
     with _lock:
         data = _lade()
         for job in data["jobs"]:
             if job["id"] == job_id and job.get("retryable") and job["current_status"] == "error":
-                if job.get("error_phase") == 1:
-                    retry_phase = 1
-                else:
-                    retry_phase = max(1, (job.get("last_success_phase") or 0) + 1)
+                retry_phase = _berechne_retry_phase(job)
+                if retry_phase == 3:
+                    job["ingest_job_id"] = None  # alte ungültige ID löschen
                 job["current_phase"] = retry_phase
                 job["current_status"] = "retry_pending"
                 job["error_phase"] = None
@@ -179,7 +192,9 @@ def alle_retry():
         result = []
         for job in data["jobs"]:
             if job["current_status"] == "error" and job.get("retryable"):
-                retry_phase = 1 if job.get("error_phase") == 1 else max(1, (job.get("last_success_phase") or 0) + 1)
+                retry_phase = _berechne_retry_phase(job)
+                if retry_phase == 3:
+                    job["ingest_job_id"] = None  # alte ungültige ID löschen
                 job["current_phase"] = retry_phase
                 job["current_status"] = "retry_pending"
                 job["error_phase"] = None
@@ -249,6 +264,9 @@ def setze_laufende_jobs_zurueck():
             if job.get("current_status") == "running":
                 job["current_status"] = "error"
                 job["retryable"] = True
+                # error_phase auf aktuelle Phase setzen damit Retry-Berechnung stimmt
+                if not job.get("error_phase"):
+                    job["error_phase"] = job.get("current_phase")
                 if not job.get("fehler_text"):
                     job["fehler_text"] = "Service-Neustart während Job lief"
                 geaendert += 1
