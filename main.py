@@ -688,6 +688,18 @@ def _ingest_starten(job_id):
 
     # Ingest via nativer TCP API (Port 11730) starten
     from modules import doremi_api
+
+    # Diagnose: WhoAmI prüft ob TCP/KLV-Protokoll grundsätzlich antwortet
+    try:
+        who = doremi_api.who_am_i(ip)
+        logging.getLogger("dcp_automatisierung").info(
+            f"[Ingest] Doremi WhoAmI OK: '{who}'"
+        )
+    except Exception as e:
+        logging.getLogger("dcp_automatisierung").warning(
+            f"[Ingest] Doremi WhoAmI fehlgeschlagen (nicht kritisch): {e}"
+        )
+
     ingest_job_id = doremi_api.ingest_starten(ip, assetmap_pfad)
 
     # Job-ID für Phase 5 (Monitoring) speichern
@@ -1088,6 +1100,20 @@ def bearbeite_befehl(text):
             f"Laufende Jobs bleiben erhalten."
         )
 
+    elif low == "/doremi_test":
+        cfg = lade_config()
+        ip  = cfg.get("doremi", {}).get("ip", "?")
+        from modules import doremi_api
+        try:
+            result = doremi_api.who_am_i(ip)
+            telegram_bot.sende_nachricht(
+                f"Doremi WhoAmI OK ({ip})\nAntwort: {result or '(leer)'}"
+            )
+        except Exception as e:
+            telegram_bot.sende_nachricht(
+                f"Doremi WhoAmI FEHLER ({ip})\n{e}"
+            )
+
     elif low == "/pause":
         pausiert = toggle_pause()
         if pausiert:
@@ -1120,6 +1146,7 @@ def bearbeite_befehl(text):
             f"/jobs                Fehler & Retry\n"
             f"/pause               Scan pausieren\n"
             f"/neustart /restart   Service neu starten\n"
+            f"/doremi_test         Doremi TCP-Verbindung testen\n"
             f"{t}"
         )
 
