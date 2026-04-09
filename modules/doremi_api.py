@@ -153,28 +153,19 @@ def ingest_starten(ip, dcp_name):
     Gibt die Ingest-Job-ID zurück (int).
     Wirft RuntimeError wenn der Ingest nicht gestartet werden konnte.
 
-    XML-Format: Quelle = /gui/{dcp_name}/ASSETMAP.xml auf dem Doremi-Dateisystem.
+    Payload: Pfad zur ASSETMAP.xml als UTF-8 String (kein XML-Wrapper).
     """
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        "<IngestJobRequest>"
-        f"<Annotation>{dcp_name}</Annotation>"
-        "<ContentList>"
-        "<Content>"
-        f"<ContentPath>/gui/{dcp_name}/ASSETMAP.xml</ContentPath>"
-        "</Content>"
-        "</ContentList>"
-        "</IngestJobRequest>"
-    )
+    pfad = f"/gui/{dcp_name}/ASSETMAP.xml"
+    log.info(f"[Doremi API] IngestAddJob für '{dcp_name}' – Pfad: {pfad}")
 
-    log.info(f"[Doremi API] IngestAddJob für '{dcp_name}' – XML: {xml}")
-
-    payload = xml.encode("utf-8")
+    payload = pfad.encode("utf-8")
     nachricht, req_id = _baue_nachricht(CMD_INGEST_ADD_JOB, payload)
 
     with _verbinde(ip) as sock:
         sock.sendall(nachricht)
         cmd_key, resp_payload = _lese_antwort(sock)
+
+    log.debug(f"[Doremi API] IngestAddJob Response-Payload (hex): {resp_payload.hex()}")
 
     if cmd_key != RESP_INGEST_ADD_JOB:
         raise RuntimeError(
@@ -191,23 +182,20 @@ def ingest_starten(ip, dcp_name):
     # Antwort: erste 8 Bytes = job_id (int64 big-endian)
     job_id = struct.unpack(">q", resp_payload[:8])[0]
 
-    # Letzten 4 Bytes = Antwortcode (0 = OK)
+    # Fehlercode prüfen: Byte 8 (1 Byte) oder Bytes 8-11 (4 Byte int32)
+    response_code = 0
     if len(resp_payload) >= 12:
-        response_code = struct.unpack(">I", resp_payload[-4:])[0]
-        if response_code != 0:
-            raise RuntimeError(
-                f"IngestAddJob Fehlercode: {response_code} "
-                f"– Rohinhalt: {resp_payload.hex()}"
-            )
+        response_code = struct.unpack(">I", resp_payload[8:12])[0]
+    elif len(resp_payload) >= 9:
+        response_code = resp_payload[8]
 
-    if job_id == 0:
-        log.warning(
-            f"[Doremi API] IngestAddJob lieferte job_id=0 – "
-            f"möglicherweise wurde kein Ingest gestartet. "
-            f"Vollständiger Response-Payload (hex): {resp_payload.hex()}"
+    if response_code != 0:
+        raise RuntimeError(
+            f"IngestAddJob Fehlercode: {response_code} "
+            f"– Rohinhalt: {resp_payload.hex()}"
         )
-    else:
-        log.info(f"[Doremi API] IngestAddJob erfolgreich – job_id={job_id}")
+
+    log.info(f"[Doremi API] IngestAddJob erfolgreich – job_id={job_id}")
     return job_id
 
 
