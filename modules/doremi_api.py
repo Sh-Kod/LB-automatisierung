@@ -169,30 +169,72 @@ def who_am_i(ip):
 def _generiere_pfad_varianten(assetmap_pfad):
     """Generiert Pfad-Varianten für IngestAddJob (primärer Pfad zuerst).
 
-    Doremi-interne Pfade können je nach FTP-Konfiguration variieren:
-      - Mit /incoming-Präfix:  /incoming/gui/{name}/ASSETMAP.xml
-      - Ohne /incoming-Präfix: /gui/{name}/ASSETMAP.xml
-      - Nur Ordner:            /incoming/gui/{name}  oder  /gui/{name}
+    Doremi-interne Pfade können je nach Firmware-Version und FTP-Konfiguration
+    in verschiedenen Formaten erwartet werden. Getestete Varianten:
+      - Vollpfad mit /incoming-Präfix: /incoming/gui/{name}/ASSETMAP.xml
+      - Ohne /incoming-Präfix:         /gui/{name}/ASSETMAP.xml
+      - Ohne .xml-Extension:           /incoming/gui/{name}/ASSETMAP
+      - Nur Ordnerpfad:                /incoming/gui/{name}
+      - Relativer Pfad:                {name}/ASSETMAP.xml
+      - Nur DCP-Name:                  {name}
     """
     varianten = [assetmap_pfad]
-
     assetmap_upper = assetmap_pfad.upper()
 
-    # Variante ohne /incoming-Präfix
+    # Basis-Pfad ohne /incoming-Präfix (oder mit, falls nicht vorhanden)
     if assetmap_pfad.startswith("/incoming"):
-        ohne = assetmap_pfad[len("/incoming"):]
-        varianten.append(ohne)
-    # Variante mit /incoming-Präfix (falls nicht schon vorhanden)
+        ohne_incoming = assetmap_pfad[len("/incoming"):]
     else:
-        varianten.append("/incoming" + assetmap_pfad)
+        ohne_incoming = assetmap_pfad
 
-    # Ordner-Varianten (ohne ASSETMAP-Dateiname)
+    mit_incoming = (
+        assetmap_pfad if assetmap_pfad.startswith("/incoming")
+        else "/incoming" + assetmap_pfad
+    )
+
+    # --- ASSETMAP-Datei-Varianten ---
     if "ASSETMAP" in assetmap_upper:
-        idx = assetmap_upper.rfind("/ASSETMAP")
-        ordner = assetmap_pfad[:idx]
-        for basis in [ordner, ordner[len("/incoming"):] if ordner.startswith("/incoming") else "/incoming" + ordner]:
-            varianten.append(basis + "/")
-            varianten.append(basis)
+        idx      = assetmap_upper.rfind("/ASSETMAP")
+        # Pfad bis inkl. letztem "/" vor ASSETMAP
+        ordner   = assetmap_pfad[:idx]          # z.B. /incoming/gui/{name}
+        am_datei = assetmap_pfad[idx + 1:]      # z.B. ASSETMAP.xml
+
+        # Ohne .xml-Extension
+        am_ohne_ext = am_datei
+        if am_datei.upper().endswith(".XML"):
+            am_ohne_ext = am_datei[:-4]
+
+        ordner_ohne = (ordner[len("/incoming"):] if ordner.startswith("/incoming")
+                       else ordner)
+        ordner_mit  = (ordner if ordner.startswith("/incoming")
+                       else "/incoming" + ordner)
+
+        # Vollpfad-Varianten (mit/ohne /incoming, mit/ohne .xml)
+        varianten += [
+            ohne_incoming,                              # /gui/{name}/ASSETMAP.xml (falls primary mit /incoming)
+            mit_incoming,                               # /incoming/gui/{name}/ASSETMAP.xml (falls primary ohne)
+            ordner_mit  + "/" + am_ohne_ext,            # /incoming/gui/{name}/ASSETMAP
+            ordner_ohne + "/" + am_ohne_ext,            # /gui/{name}/ASSETMAP
+        ]
+
+        # Ordner-Varianten (ohne Dateiname)
+        varianten += [
+            ordner_mit  + "/",                          # /incoming/gui/{name}/
+            ordner_ohne + "/",                          # /gui/{name}/
+            ordner_mit,                                 # /incoming/gui/{name}
+            ordner_ohne,                                # /gui/{name}
+        ]
+
+        # Relative Varianten (kein führender Slash)
+        # DCP-Name extrahieren (letzter Pfadbestandteil des Ordners)
+        dcp_name = ordner_ohne.rstrip("/").split("/")[-1]
+        if dcp_name:
+            varianten += [
+                dcp_name + "/" + am_datei,              # {name}/ASSETMAP.xml
+                dcp_name + "/" + am_ohne_ext,           # {name}/ASSETMAP
+                dcp_name + "/",                         # {name}/
+                dcp_name,                               # {name}
+            ]
 
     # Deduplizieren (Reihenfolge beibehalten)
     seen = set()
