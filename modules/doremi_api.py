@@ -191,21 +191,13 @@ def ingest_starten(ip, assetmap_pfad):
     elif len(resp_payload) >= 9:
         response_code = resp_payload[8]
 
-    # WICHTIG: 0x01 könnte je nach Firmware-Version "success" oder "error" bedeuten.
-    # Wir behandeln es als Warnung und lassen Monitoring entscheiden.
-    # Nur bei response_code >= 2 → eindeutiger Fehler.
-    if response_code >= 2:
+    if response_code != 0:
         raise RuntimeError(
             f"IngestAddJob Fehlercode: {response_code} "
             f"– Rohinhalt: {resp_payload.hex()}"
         )
-    if response_code == 1:
-        log.warning(
-            f"[Doremi API] IngestAddJob Statusbyte=1 (job_id={job_id}). "
-            f"Kann Success oder Error sein – Monitoring entscheidet."
-        )
-    else:
-        log.info(f"[Doremi API] IngestAddJob OK – job_id={job_id}")
+
+    log.info(f"[Doremi API] IngestAddJob OK – job_id={job_id}")
     return job_id
 
 

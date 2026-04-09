@@ -672,10 +672,16 @@ def _ingest_starten(job_id):
             f"FTP-Upload möglicherweise unvollständig."
         )
 
-    # Ingest-Pfad: Verzeichnis des DCP (Doremi findet ASSETMAP intern)
-    # Format: {content_path}/{dcp_name}
-    # In config.yaml änderbar: doremi.content_path (default: /gui)
-    assetmap_pfad = f"{content_path}/{dcp_name}"
+    # Exakten ASSETMAP-Dateinamen via FTP ermitteln
+    assetmap_name = _ftp_assetmap_name(cfg, dcp_name)
+    if not assetmap_name:
+        raise RuntimeError(
+            f"Kein ASSETMAP-File in /gui/{dcp_name}/ gefunden. "
+            f"FTP-Upload möglicherweise unvollständig."
+        )
+    # Ingest-Pfad: FTP /gui/ = interner Dateisystem-Pfad /incoming/gui/
+    # Format: {content_path}/{dcp_name}/{assetmap_name}
+    assetmap_pfad = f"{content_path}/{dcp_name}/{assetmap_name}"
     logging.getLogger("dcp_automatisierung").info(
         f"[Ingest] Starte IngestAddJob mit Pfad: {assetmap_pfad}"
     )
@@ -701,10 +707,10 @@ def _monitoring_ueberwachen(job_id):
     dcp_name      = job["final_name"]
     ingest_job_id = job.get("ingest_job_id")
 
-    if ingest_job_id is None:
-        # Wirklich kein job_id gespeichert (z.B. Ingest-Phase übersprungen)
+    if ingest_job_id is None or ingest_job_id == 0:
         raise RuntimeError(
-            f"Kein Ingest-Job für '{dcp_name}' gestartet. Bitte Ingest erneut starten."
+            f"Kein gültiger Ingest-Job für '{dcp_name}' (job_id={ingest_job_id}). "
+            f"Bitte Ingest erneut starten."
         )
     else:
         from modules import doremi_api
