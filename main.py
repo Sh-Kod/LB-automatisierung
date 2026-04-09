@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import py_compile
 import re
@@ -613,19 +614,15 @@ def _ftp_schnell_pruefen(cfg, dcp_name):
 
 
 def _ingest_starten(job_id):
-    import base64
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
 
     cfg      = lade_config()
     ip       = cfg["doremi"]["ip"]
-    user     = cfg["doremi"]["web_user"]
-    passwd   = cfg["doremi"]["web_pass"]
     dcp_name = job["final_name"]
 
     # Schnell-Check: ist DCP überhaupt in /gui?
-    # Falls nicht → sofort neu hochladen statt 20 Min warten
     if not _ftp_schnell_pruefen(cfg, dcp_name):
         telegram_bot.sende_nachricht(f"DCP '{dcp_name}' nicht in /gui – lade neu hoch...")
         _upload_durchfuehren(job_id)
@@ -638,52 +635,70 @@ def _ingest_starten(job_id):
             f"FTP-Upload möglicherweise unvollständig."
         )
 
-    time.sleep(5)
-    creds     = base64.b64encode(f"{user}:{passwd}".encode()).decode()
-    post_data = f"content={dcp_name}".encode()
-    req = urllib.request.Request(
-        f"http://{ip}/Ingest/",
-        data=post_data, method="POST"
-    )
-    req.add_header("Authorization", f"Basic {creds}")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    try:
-        with urllib.request.urlopen(req, timeout=30):
-            pass
-    except Exception:
-        pass  # FTP-Upload in /gui löst Ingest automatisch aus
+    # Ingest via nativer TCP API (Port 11730) starten
+    from modules import doremi_api
+    ingest_job_id = doremi_api.ingest_starten(ip, dcp_name)
+
+    # Job-ID für Phase 5 (Monitoring) speichern
+    job_manager.speichere_ingest_id(job_id, ingest_job_id)
 
 
 def _monitoring_ueberwachen(job_id):
-    import base64
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
 
-    cfg      = lade_config()
-    ip       = cfg["doremi"]["ip"]
-    user     = cfg["doremi"]["web_user"]
-    passwd   = cfg["doremi"]["web_pass"]
-    dcp_name = job["final_name"]
+    cfg           = lade_config()
+    ip            = cfg["doremi"]["ip"]
+    dcp_name      = job["final_name"]
+    ingest_job_id = job.get("ingest_job_id")
 
-    creds = base64.b64encode(f"{user}:{passwd}".encode()).decode()
+    if not ingest_job_id:
+        # Kein job_id vorhanden (z.B. nach Retry ohne neue Ingest-Phase)
+        # Kurz warten und weitermachen – Ingest läuft möglicherweise schon
+        import logging
+        logging.getLogger("dcp_automatisierung").warning(
+            f"[Monitoring] Kein ingest_job_id für '{dcp_name}' – warte 3 Min als Fallback"
+        )
+        time.sleep(180)
+    else:
+        from modules import doremi_api
+        deadline = time.time() + 30 * 60   # max 30 Minuten
 
-    for _ in range(36):  # max 3 Minuten (36 × 5s)
-        time.sleep(5)
-        try:
-            req = urllib.request.Request(f"http://{ip}/ContentInfo/?name={dcp_name}")
-            req.add_header("Authorization", f"Basic {creds}")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                body = resp.read().decode("utf-8", errors="replace").lower()
-                if dcp_name.lower() in body and any(
-                    w in body for w in ("complete", "ready", "ok", "ingested")
-                ):
+        letzter_progress = -1
+        while time.time() < deadline:
+            try:
+                status_code, status_name, progress = doremi_api.ingest_status(
+                    ip, ingest_job_id
+                )
+
+                # Fortschritt nur senden wenn er sich geändert hat (kein Spam)
+                if progress != letzter_progress and progress % 25 == 0 and progress > 0:
+                    telegram_bot.sende_nachricht(
+                        f"Ingest {dcp_name}: {progress}% ({status_name})"
+                    )
+                    letzter_progress = progress
+
+                if status_code == 4:    # success
                     break
-        except Exception:
-            pass
-    # Timeout ist kein Fehler – DCP wurde hochgeladen, Ingest läuft
+                elif status_code in (5, 7):   # aborted / failed
+                    raise RuntimeError(
+                        f"Ingest fehlgeschlagen: status={status_name}({status_code})"
+                    )
+                # 0=pending, 2=running, 3=scheduled → weiter warten
 
-    # FTP aufräumen + DCP ins Archiv verschieben
+            except (ConnectionError, OSError, TimeoutError) as e:
+                import logging
+                logging.getLogger("dcp_automatisierung").warning(
+                    f"[Monitoring] TCP-Fehler bei IngestGetJobStatus: {e} – nächster Versuch in 15s"
+                )
+                time.sleep(15)
+                continue
+
+            time.sleep(10)
+        # Timeout ist kein harter Fehler – Ingest läuft weiter auf Doremi
+
+    # FTP-Ordner auf Doremi aufräumen + DCP lokal ins Archiv verschieben
     _ftp_ordner_loeschen(cfg, dcp_name)
     try:
         dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
@@ -1058,6 +1073,24 @@ def bearbeite_befehl(text):
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Logging einrichten (Datei + Konsole)
+    _cfg_log = {}
+    try:
+        _cfg_log = yaml.safe_load(open(CONFIG_PFAD, encoding="utf-8")).get("logging", {})
+    except Exception:
+        pass
+    _log_datei  = _cfg_log.get("log_datei", "C:\\dcp_automatisierung\\logs\\dcp_automatisierung.log")
+    _log_level  = _cfg_log.get("log_level", "INFO")
+    os.makedirs(os.path.dirname(_log_datei), exist_ok=True)
+    logging.basicConfig(
+        level=getattr(logging, _log_level, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(_log_datei, encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )
+
     queue_manager.naming_zuruecksetzen()
     job_manager.setze_laufende_jobs_zurueck()  # Nach Neustart: hängende Jobs retrybar machen
     job_manager.bereinige_alte_jobs(tage=7)    # Stale Einträge aus jobs.json entfernen
