@@ -36,10 +36,12 @@ KLV_HEADER = bytes([
 # Befehlsschlüssel (Request)
 CMD_INGEST_ADD_JOB    = bytes([0x07, 0x0F, 0x00])
 CMD_INGEST_GET_STATUS = bytes([0x07, 0x1D, 0x00])
+CMD_WHO_AM_I          = bytes([0x0E, 0x0B, 0x00])
 
 # Antwortschlüssel (Response)
 RESP_INGEST_ADD_JOB    = bytes([0x07, 0x10, 0x00])
 RESP_INGEST_GET_STATUS = bytes([0x07, 0x1E, 0x00])
+RESP_WHO_AM_I          = bytes([0x0E, 0x0C, 0x00])
 
 STATUS_NAMEN = {
     0: "pending",
@@ -144,24 +146,74 @@ def _verbinde(ip):
 # Öffentliche API
 # ──────────────────────────────────────────────
 
-def ingest_starten(ip, assetmap_pfad):
+def who_am_i(ip):
     """
-    Startet Ingest auf dem Doremi via TCP API.
+    Diagnoseanfrage WhoAmI – prüft ob TCP/KLV-Protokoll grundsätzlich funktioniert.
+    Gibt die Antwort als Text zurück (Gerätename o.ä.).
+    Wirft Exception bei Verbindungs- oder Protokollfehler.
+    """
+    nachricht, _ = _baue_nachricht(CMD_WHO_AM_I, b"")
+    with _verbinde(ip) as sock:
+        sock.sendall(nachricht)
+        cmd_key, resp_payload = _lese_antwort(sock)
+    log.info(
+        f"[Doremi API] WhoAmI Response – key={cmd_key.hex()}, "
+        f"payload={resp_payload.hex()}"
+    )
+    try:
+        return resp_payload.decode("utf-8", errors="replace").strip("\x00").strip()
+    except Exception:
+        return resp_payload.hex()
 
-    assetmap_pfad: vollständiger Pfad zur ASSETMAP-Datei auf dem Doremi-Filesystem,
-                   z.B. '/gui/MEIN_DCP/ASSETMAP.xml'
-                   Konfigurierbar über doremi.content_path in config.yaml.
 
-    Gibt die Ingest-Job-ID zurück (int).
-    Wirft RuntimeError wenn der Ingest nicht gestartet werden konnte.
+def _generiere_pfad_varianten(assetmap_pfad):
+    """Generiert Pfad-Varianten für IngestAddJob (primärer Pfad zuerst).
+
+    Doremi-interne Pfade können je nach FTP-Konfiguration variieren:
+      - Mit /incoming-Präfix:  /incoming/gui/{name}/ASSETMAP.xml
+      - Ohne /incoming-Präfix: /gui/{name}/ASSETMAP.xml
+      - Nur Ordner:            /incoming/gui/{name}  oder  /gui/{name}
+    """
+    varianten = [assetmap_pfad]
+
+    assetmap_upper = assetmap_pfad.upper()
+
+    # Variante ohne /incoming-Präfix
+    if assetmap_pfad.startswith("/incoming"):
+        ohne = assetmap_pfad[len("/incoming"):]
+        varianten.append(ohne)
+    # Variante mit /incoming-Präfix (falls nicht schon vorhanden)
+    else:
+        varianten.append("/incoming" + assetmap_pfad)
+
+    # Ordner-Varianten (ohne ASSETMAP-Dateiname)
+    if "ASSETMAP" in assetmap_upper:
+        idx = assetmap_upper.rfind("/ASSETMAP")
+        ordner = assetmap_pfad[:idx]
+        for basis in [ordner, ordner[len("/incoming"):] if ordner.startswith("/incoming") else "/incoming" + ordner]:
+            varianten.append(basis + "/")
+            varianten.append(basis)
+
+    # Deduplizieren (Reihenfolge beibehalten)
+    seen = set()
+    result = []
+    for v in varianten:
+        if v and v not in seen:
+            seen.add(v)
+            result.append(v)
+    return result
+
+
+def _ingest_add_job_einzel(ip, assetmap_pfad):
+    """Einzelner IngestAddJob-Versuch für einen Pfad.
+    Gibt job_id (int) zurück oder wirft RuntimeError.
     """
     payload_bytes = assetmap_pfad.encode("utf-8")
     log.info(
         f"[Doremi API] IngestAddJob – Pfad: {assetmap_pfad} "
         f"(hex: {payload_bytes.hex()})"
     )
-
-    nachricht, req_id = _baue_nachricht(CMD_INGEST_ADD_JOB, payload_bytes)
+    nachricht, _ = _baue_nachricht(CMD_INGEST_ADD_JOB, payload_bytes)
 
     with _verbinde(ip) as sock:
         sock.sendall(nachricht)
@@ -177,28 +229,56 @@ def ingest_starten(ip, assetmap_pfad):
 
     if len(resp_payload) < 8:
         raise RuntimeError(
-            f"IngestAddJob-Antwort zu kurz: {len(resp_payload)} Bytes – "
+            f"Antwort zu kurz: {len(resp_payload)} Bytes – "
             f"Rohinhalt: {resp_payload.hex()}"
         )
 
-    # Antwort: erste 8 Bytes = job_id (int64 big-endian)
     job_id = struct.unpack(">q", resp_payload[:8])[0]
 
-    # Statusbyte prüfen (Byte 8 oder letztes Byte)
     response_code = 0
     if len(resp_payload) >= 12:
         response_code = struct.unpack(">I", resp_payload[8:12])[0]
     elif len(resp_payload) >= 9:
         response_code = resp_payload[8]
 
-    if response_code != 0:
+    if response_code != 0 or job_id == 0:
         raise RuntimeError(
-            f"IngestAddJob Fehlercode: {response_code} "
+            f"IngestAddJob Fehlercode={response_code}, job_id={job_id} "
             f"– Rohinhalt: {resp_payload.hex()}"
         )
 
-    log.info(f"[Doremi API] IngestAddJob OK – job_id={job_id}")
     return job_id
+
+
+def ingest_starten(ip, assetmap_pfad):
+    """
+    Startet Ingest auf dem Doremi via TCP API.
+
+    assetmap_pfad: Pfad zur ASSETMAP-Datei auf dem Doremi-Filesystem,
+                   z.B. '/incoming/gui/MEIN_DCP/ASSETMAP.xml'
+                   Konfigurierbar über doremi.content_path in config.yaml.
+
+    Probiert automatisch mehrere Pfad-Varianten falls die primäre fehlschlägt.
+    Gibt die Ingest-Job-ID zurück (int).
+    Wirft RuntimeError wenn alle Varianten scheitern.
+    """
+    varianten = _generiere_pfad_varianten(assetmap_pfad)
+    log.info(f"[Doremi API] Versuche {len(varianten)} Pfad-Varianten: {varianten}")
+
+    letzter_fehler = "Kein Versuch"
+    for pfad in varianten:
+        try:
+            job_id = _ingest_add_job_einzel(ip, pfad)
+            log.info(f"[Doremi API] IngestAddJob OK – Pfad: {pfad}, job_id={job_id}")
+            return job_id
+        except RuntimeError as e:
+            log.warning(f"[Doremi API] Pfad-Variante fehlgeschlagen: {pfad} → {e}")
+            letzter_fehler = str(e)
+
+    raise RuntimeError(
+        f"IngestAddJob fehlgeschlagen für alle {len(varianten)} Pfad-Varianten. "
+        f"Varianten: {varianten}. Letzter Fehler: {letzter_fehler}"
+    )
 
 
 def ingest_status(ip, job_id):
