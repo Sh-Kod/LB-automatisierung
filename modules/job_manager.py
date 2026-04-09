@@ -171,8 +171,8 @@ def _berechne_retry_phase(job):
     else:
         # Fallback: last_success_phase + 1
         phase = max(1, (job.get("last_success_phase") or 0) + 1)
-    # Monitoring (Phase 4) ohne gültige Ingest-ID macht keinen Sinn
-    if phase >= 4 and job.get("ingest_job_id") in (0, None):
+    # Monitoring (Phase 4) ohne jegliche Ingest-ID macht keinen Sinn
+    if phase >= 4 and job.get("ingest_job_id") is None:
         return 3
     return phase
 

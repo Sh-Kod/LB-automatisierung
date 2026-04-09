@@ -656,8 +656,8 @@ def _ingest_starten(job_id):
     dcp_name = job["final_name"]
 
     # Pfad-Prefix: konfigurierbar in config.yaml unter doremi.content_path
-    # Default: /gui (entspricht dem FTP-Upload-Pfad)
-    content_path = cfg.get("doremi", {}).get("content_path", "/gui")
+    # FTP-Pfad /gui/ entspricht intern /incoming/gui/ auf dem Doremi-Dateisystem
+    content_path = cfg.get("doremi", {}).get("content_path", "/incoming/gui")
 
     # Schnell-Check: ist DCP überhaupt in /gui?
     if not _ftp_schnell_pruefen(cfg, dcp_name):
@@ -701,11 +701,10 @@ def _monitoring_ueberwachen(job_id):
     dcp_name      = job["final_name"]
     ingest_job_id = job.get("ingest_job_id")
 
-    if ingest_job_id is None or ingest_job_id == 0:
-        # Kein gültiger job_id – Ingest wurde nie korrekt gestartet
+    if ingest_job_id is None:
+        # Wirklich kein job_id gespeichert (z.B. Ingest-Phase übersprungen)
         raise RuntimeError(
-            f"Kein gültiger Ingest-Job für '{dcp_name}' (ingest_job_id={ingest_job_id}). "
-            f"Bitte Ingest erneut starten (/retry)."
+            f"Kein Ingest-Job für '{dcp_name}' gestartet. Bitte Ingest erneut starten."
         )
     else:
         from modules import doremi_api
