@@ -899,12 +899,12 @@ def pruefe_update(manuell=False):
             "/tn", "DCP_Automatisierung_Updater",
             "/tr", f'"{sys.executable}" "{UPDATER_PFAD}"',
             "/sc", "once", "/st", start_time, "/ru", "SYSTEM"
-        ], capture_output=True, text=True)
+        ], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r1.returncode != 0:
             raise RuntimeError(f"Task erstellen fehlgeschlagen: {r1.stderr.strip()}")
         r2 = subprocess.run([
             "schtasks", "/run", "/tn", "DCP_Automatisierung_Updater"
-        ], capture_output=True, text=True)
+        ], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r2.returncode != 0:
             raise RuntimeError(f"Task starten fehlgeschlagen: {r2.stderr.strip()}")
 
