@@ -1,5 +1,5 @@
 {
-  "version": "2.26",
+  "version": "2.27",
   "files": [
     {"src": "main.py",                      "dest": "C:\\dcp_automatisierung\\main.py"},
     {"src": "updater.py",                   "dest": "C:\\dcp_automatisierung\\updater.py"},
@@ -9,6 +9,7 @@
     {"src": "modules/analyzer.py",          "dest": "C:\\dcp_automatisierung\\modules\\analyzer.py"},
     {"src": "modules/telegram_bot.py",      "dest": "C:\\dcp_automatisierung\\modules\\telegram_bot.py"},
     {"src": "modules/queue_manager.py",     "dest": "C:\\dcp_automatisierung\\modules\\queue_manager.py"},
-    {"src": "modules/job_manager.py",       "dest": "C:\\dcp_automatisierung\\modules\\job_manager.py"}
+    {"src": "modules/job_manager.py",       "dest": "C:\\dcp_automatisierung\\modules\\job_manager.py"},
+    {"src": "modules/doremi_api.py",        "dest": "C:\\dcp_automatisierung\\modules\\doremi_api.py"}
   ]
 }

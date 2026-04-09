@@ -117,6 +117,17 @@ def hole_job(job_id):
                 return dict(j)
     return None
 
+
+def speichere_ingest_id(job_id, ingest_job_id):
+    """Speichert die Doremi Ingest-Job-ID im Job (fuer Monitoring in Phase 4)."""
+    with _lock:
+        data = _lade()
+        for job in data["jobs"]:
+            if job["id"] == job_id:
+                job["ingest_job_id"] = ingest_job_id
+                _speichere(data)
+                return
+
 def hat_job_fuer_dcp(dcp_name):
     """True wenn ein laufender/fehlerhafter Job für diesen DCP-Namen existiert."""
     with _lock:
