@@ -646,6 +646,35 @@ def _ftp_assetmap_name(cfg, dcp_name):
     return None
 
 
+def _lese_assetmap_uuid(cfg, dcp_name, assetmap_name):
+    """Liest die Content-UUID aus der ASSETMAP.xml auf dem Doremi-FTP.
+    Gibt die UUID als String zurück (ohne 'urn:uuid:'), oder None bei Fehler."""
+    import ftplib
+    import xml.etree.ElementTree as ET
+    log = logging.getLogger("dcp_automatisierung")
+    try:
+        lines = []
+        with ftplib.FTP(timeout=20) as ftp:
+            ftp.connect(cfg["doremi"]["ip"], 21)
+            ftp.login(cfg["doremi"]["ftp_user"], cfg["doremi"]["ftp_pass"])
+            ftp.set_pasv(True)
+            ftp.retrlines(f"RETR /gui/{dcp_name}/{assetmap_name}", lines.append)
+        xml_content = "\n".join(lines)
+        root = ET.fromstring(xml_content)
+        # ASSETMAP <Id> oder <UUID> Element suchen
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag in ("Id", "UUID") and elem.text:
+                val = elem.text.strip()
+                if "urn:uuid:" in val.lower():
+                    uuid = val.lower().replace("urn:uuid:", "").strip()
+                    log.info(f"[Ingest] ASSETMAP UUID gefunden: {uuid}")
+                    return uuid
+    except Exception as e:
+        log.warning(f"[Ingest] ASSETMAP UUID nicht lesbar: {e}")
+    return None
+
+
 def _ingest_starten(job_id):
     job = job_manager.hole_job(job_id)
     if not job:
@@ -688,19 +717,19 @@ def _ingest_starten(job_id):
 
     # Ingest via nativer TCP API (Port 11730) starten
     from modules import doremi_api
+    log = logging.getLogger("dcp_automatisierung")
 
     # Diagnose: WhoAmI prüft ob TCP/KLV-Protokoll grundsätzlich antwortet
     try:
         who = doremi_api.who_am_i(ip)
-        logging.getLogger("dcp_automatisierung").info(
-            f"[Ingest] Doremi WhoAmI OK: '{who}'"
-        )
+        log.info(f"[Ingest] Doremi WhoAmI OK: '{who}'")
     except Exception as e:
-        logging.getLogger("dcp_automatisierung").warning(
-            f"[Ingest] Doremi WhoAmI fehlgeschlagen (nicht kritisch): {e}"
-        )
+        log.warning(f"[Ingest] Doremi WhoAmI fehlgeschlagen (nicht kritisch): {e}")
 
-    ingest_job_id = doremi_api.ingest_starten(ip, assetmap_pfad)
+    # Content-UUID aus ASSETMAP.xml lesen (als Fallback für UUID-basiertes Ingest)
+    content_uuid = _lese_assetmap_uuid(cfg, dcp_name, assetmap_name)
+
+    ingest_job_id = doremi_api.ingest_starten(ip, assetmap_pfad, content_uuid=content_uuid)
 
     # Job-ID für Phase 5 (Monitoring) speichern
     job_manager.speichere_ingest_id(job_id, ingest_job_id)
@@ -1104,15 +1133,26 @@ def bearbeite_befehl(text):
         cfg = lade_config()
         ip  = cfg.get("doremi", {}).get("ip", "?")
         from modules import doremi_api
+        msg = f"Doremi Diagnose ({ip})\n{'─'*28}\n"
+        # WhoAmI
         try:
             result = doremi_api.who_am_i(ip)
-            telegram_bot.sende_nachricht(
-                f"Doremi WhoAmI OK ({ip})\nAntwort: {result or '(leer)'}"
-            )
+            msg += f"WhoAmI:     OK → '{result or '(leer)'}'\n"
         except Exception as e:
-            telegram_bot.sende_nachricht(
-                f"Doremi WhoAmI FEHLER ({ip})\n{e}"
-            )
+            msg += f"WhoAmI:     FEHLER → {e}\n"
+        # API-Version
+        try:
+            key, payload = doremi_api.get_api_version(ip)
+            msg += f"APIVersion: key={key}  raw={payload}\n"
+        except Exception as e:
+            msg += f"APIVersion: FEHLER → {e}\n"
+        # Ingest-Liste
+        try:
+            key, payload = doremi_api.get_ingest_list(ip)
+            msg += f"IngestList: key={key}  raw={payload[:60]}{'...' if len(payload)>60 else ''}\n"
+        except Exception as e:
+            msg += f"IngestList: FEHLER → {e}\n"
+        telegram_bot.sende_nachricht(msg)
 
     elif low == "/pause":
         pausiert = toggle_pause()

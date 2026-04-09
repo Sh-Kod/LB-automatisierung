@@ -36,7 +36,9 @@ KLV_HEADER = bytes([
 # Befehlsschlüssel (Request)
 CMD_INGEST_ADD_JOB    = bytes([0x07, 0x0F, 0x00])
 CMD_INGEST_GET_STATUS = bytes([0x07, 0x1D, 0x00])
+CMD_INGEST_GET_LIST   = bytes([0x07, 0x19, 0x00])   # IngestGetJobList (Diagnose)
 CMD_WHO_AM_I          = bytes([0x0E, 0x0B, 0x00])
+CMD_GET_API_VERSION   = bytes([0x05, 0x05, 0x00])   # GetAPIProtocolVersion
 
 # Antwortschlüssel (Response)
 RESP_INGEST_ADD_JOB    = bytes([0x07, 0x10, 0x00])
@@ -166,6 +168,46 @@ def who_am_i(ip):
         return resp_payload.hex()
 
 
+def get_api_version(ip):
+    """
+    GetAPIProtocolVersion – gibt API-Versionsinformation zurück.
+    Gibt (cmd_key_hex, payload_hex) zurück.
+    """
+    nachricht, _ = _baue_nachricht(CMD_GET_API_VERSION, b"")
+    try:
+        with _verbinde(ip) as sock:
+            sock.sendall(nachricht)
+            cmd_key, resp_payload = _lese_antwort(sock)
+        log.info(
+            f"[Doremi API] GetAPIVersion Response – key={cmd_key.hex()}, "
+            f"payload={resp_payload.hex()}"
+        )
+        return cmd_key.hex(), resp_payload.hex()
+    except Exception as e:
+        log.warning(f"[Doremi API] GetAPIVersion Fehler: {e}")
+        return None, str(e)
+
+
+def get_ingest_list(ip):
+    """
+    IngestGetJobList – listet aktive/wartende Ingest-Jobs auf dem Doremi.
+    Gibt (cmd_key_hex, payload_hex) zurück – nützlich zur Diagnose.
+    """
+    nachricht, _ = _baue_nachricht(CMD_INGEST_GET_LIST, b"")
+    try:
+        with _verbinde(ip) as sock:
+            sock.sendall(nachricht)
+            cmd_key, resp_payload = _lese_antwort(sock)
+        log.info(
+            f"[Doremi API] IngestGetList Response – key={cmd_key.hex()}, "
+            f"payload={resp_payload.hex()}"
+        )
+        return cmd_key.hex(), resp_payload.hex()
+    except Exception as e:
+        log.warning(f"[Doremi API] IngestGetList Fehler: {e}")
+        return None, str(e)
+
+
 def _generiere_pfad_varianten(assetmap_pfad):
     """Generiert Pfad-Varianten für IngestAddJob (primärer Pfad zuerst).
 
@@ -292,34 +334,43 @@ def _ingest_add_job_einzel(ip, assetmap_pfad):
     return job_id
 
 
-def ingest_starten(ip, assetmap_pfad):
+def ingest_starten(ip, assetmap_pfad, content_uuid=None):
     """
     Startet Ingest auf dem Doremi via TCP API.
 
-    assetmap_pfad: Pfad zur ASSETMAP-Datei auf dem Doremi-Filesystem,
-                   z.B. '/incoming/gui/MEIN_DCP/ASSETMAP.xml'
-                   Konfigurierbar über doremi.content_path in config.yaml.
+    assetmap_pfad: Pfad zur ASSETMAP-Datei auf dem Doremi-Filesystem.
+    content_uuid:  Optionale Content-UUID aus der ASSETMAP.xml (urn:uuid:...).
+                   Wird als weitere Variante versucht, falls Pfade scheitern.
 
-    Probiert automatisch mehrere Pfad-Varianten falls die primäre fehlschlägt.
+    Probiert automatisch mehrere Pfad-Varianten + UUID-Formate.
     Gibt die Ingest-Job-ID zurück (int).
     Wirft RuntimeError wenn alle Varianten scheitern.
     """
     varianten = _generiere_pfad_varianten(assetmap_pfad)
-    log.info(f"[Doremi API] Versuche {len(varianten)} Pfad-Varianten: {varianten}")
+
+    # UUID-Varianten: manche Doremi-Versionen erwarten die Content-UUID
+    if content_uuid:
+        uuid_clean = content_uuid.strip().replace("urn:uuid:", "")
+        varianten += [
+            f"urn:uuid:{uuid_clean}",   # vollständige URN
+            uuid_clean,                  # nur UUID-String
+        ]
+
+    log.info(f"[Doremi API] Versuche {len(varianten)} Varianten: {varianten}")
 
     letzter_fehler = "Kein Versuch"
     for pfad in varianten:
         try:
             job_id = _ingest_add_job_einzel(ip, pfad)
-            log.info(f"[Doremi API] IngestAddJob OK – Pfad: {pfad}, job_id={job_id}")
+            log.info(f"[Doremi API] IngestAddJob OK – Variante: '{pfad}', job_id={job_id}")
             return job_id
         except RuntimeError as e:
-            log.warning(f"[Doremi API] Pfad-Variante fehlgeschlagen: {pfad} → {e}")
+            log.warning(f"[Doremi API] Variante fehlgeschlagen: '{pfad}' → {e}")
             letzter_fehler = str(e)
 
     raise RuntimeError(
-        f"IngestAddJob fehlgeschlagen für alle {len(varianten)} Pfad-Varianten. "
-        f"Varianten: {varianten}. Letzter Fehler: {letzter_fehler}"
+        f"IngestAddJob fehlgeschlagen für alle {len(varianten)} Varianten. "
+        f"Letzter Fehler: {letzter_fehler}"
     )
 
 
