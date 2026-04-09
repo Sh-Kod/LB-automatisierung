@@ -416,7 +416,8 @@ def _dcp_erstellen(job_id):
              "--j2k-bandwidth", "100",
              "-o", tmp_dir,
              ascii_bildpfad],   # ASCII-Pfad statt Original
-            capture_output=True, text=True, timeout=120
+            capture_output=True, text=True, timeout=120,
+            encoding="utf-8", errors="replace"
         )
         if r1.returncode != 0:
             raise RuntimeError(f"dcpomatic2_create: {(r1.stderr or r1.stdout)[:400]}")
@@ -445,7 +446,8 @@ def _dcp_erstellen(job_id):
         # DCP rendern - dcpomatic2_cli hat kein -o Flag, nimmt nur <FILM>
         r2 = subprocess.run(
             [cli_exe, projekt_pfad],
-            capture_output=True, text=True, timeout=7200
+            capture_output=True, text=True, timeout=7200,
+            encoding="utf-8", errors="replace"
         )
         if r2.returncode != 0:
             raise RuntimeError(f"dcpomatic2_cli: {(r2.stderr or r2.stdout)[:400]}")
@@ -653,7 +655,7 @@ def _monitoring_ueberwachen(job_id):
     dcp_name      = job["final_name"]
     ingest_job_id = job.get("ingest_job_id")
 
-    if not ingest_job_id:
+    if ingest_job_id is None:
         # Kein job_id vorhanden (z.B. nach Retry ohne neue Ingest-Phase)
         # Kurz warten und weitermachen – Ingest läuft möglicherweise schon
         import logging

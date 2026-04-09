@@ -200,7 +200,14 @@ def ingest_starten(ip, dcp_name):
                 f"– Rohinhalt: {resp_payload.hex()}"
             )
 
-    log.info(f"[Doremi API] IngestAddJob erfolgreich – job_id={job_id}")
+    if job_id == 0:
+        log.warning(
+            f"[Doremi API] IngestAddJob lieferte job_id=0 – "
+            f"möglicherweise wurde kein Ingest gestartet. "
+            f"Vollständiger Response-Payload (hex): {resp_payload.hex()}"
+        )
+    else:
+        log.info(f"[Doremi API] IngestAddJob erfolgreich – job_id={job_id}")
     return job_id
 
 
