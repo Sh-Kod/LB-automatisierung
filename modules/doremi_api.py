@@ -368,10 +368,55 @@ def ingest_starten(ip, assetmap_pfad, content_uuid=None):
             log.warning(f"[Doremi API] Variante fehlgeschlagen: '{pfad}' → {e}")
             letzter_fehler = str(e)
 
+    # Fallback: Doremi hat Content möglicherweise automatisch in die Ingest-Queue
+    # gestellt (passiert nach FTP-Upload). Suche aktiven Job in job_ids 0..99.
+    log.info(
+        "[Doremi API] Alle IngestAddJob-Varianten fehlgeschlagen – "
+        "suche vorhandenen Ingest-Job (job_ids 0..99)..."
+    )
+    gefunden = suche_aktive_ingest_job(ip, max_scan=99)
+    if gefunden:
+        job_id_vorhanden, sc, sn = gefunden
+        log.info(
+            f"[Doremi API] Vorhandenen Ingest-Job übernommen: "
+            f"job_id={job_id_vorhanden}, status={sn}({sc})"
+        )
+        return job_id_vorhanden
+
     raise RuntimeError(
-        f"IngestAddJob fehlgeschlagen für alle {len(varianten)} Varianten. "
+        f"IngestAddJob fehlgeschlagen für alle {len(varianten)} Varianten "
+        f"und kein vorhandener Ingest-Job gefunden. "
         f"Letzter Fehler: {letzter_fehler}"
     )
+
+
+def suche_aktive_ingest_job(ip, max_scan=99):
+    """Sucht aktiven Ingest-Job durch Scannen der job_ids 0..max_scan.
+
+    Hintergrund: Doremi DCP2000 erstellt automatisch Ingest-Jobs wenn Content
+    via FTP hochgeladen wird. IngestAddJob schlägt dann mit Fehler 1 fehl
+    (Job existiert bereits). Diese Funktion findet den vorhandenen Job.
+
+    Gibt (job_id, status_code, status_name) zurück wenn aktiver Job gefunden,
+    sonst None.
+    """
+    aktive_status = {0, 2, 3}  # pending, running, scheduled
+    for job_id_int in range(max_scan + 1):
+        try:
+            status_code, status_name, progress = ingest_status(ip, job_id_int)
+            log.debug(
+                f"[Doremi API] Scan job_id={job_id_int}: "
+                f"status={status_name}({status_code}), progress={progress}%"
+            )
+            if status_code in aktive_status:
+                log.info(
+                    f"[Doremi API] Aktiver Ingest-Job gefunden: "
+                    f"job_id={job_id_int}, status={status_name}({status_code})"
+                )
+                return job_id_int, status_code, status_name
+        except (RuntimeError, ConnectionError, OSError, TimeoutError):
+            pass  # Ungültige job_id oder Verbindungsfehler → überspringen
+    return None
 
 
 def ingest_status(ip, job_id):
