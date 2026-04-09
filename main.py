@@ -701,11 +701,10 @@ def _monitoring_ueberwachen(job_id):
     dcp_name      = job["final_name"]
     ingest_job_id = job.get("ingest_job_id")
 
-    if ingest_job_id is None or ingest_job_id == 0:
-        # Kein gültiger job_id – Ingest wurde nie korrekt gestartet
+    if ingest_job_id is None:
+        # Wirklich kein job_id gespeichert (z.B. Ingest-Phase übersprungen)
         raise RuntimeError(
-            f"Kein gültiger Ingest-Job für '{dcp_name}' (ingest_job_id={ingest_job_id}). "
-            f"Bitte Ingest erneut starten (/retry)."
+            f"Kein Ingest-Job für '{dcp_name}' gestartet. Bitte Ingest erneut starten."
         )
     else:
         from modules import doremi_api
