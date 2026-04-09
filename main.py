@@ -656,8 +656,8 @@ def _ingest_starten(job_id):
     dcp_name = job["final_name"]
 
     # Pfad-Prefix: konfigurierbar in config.yaml unter doremi.content_path
-    # Default: /gui (entspricht dem FTP-Upload-Pfad)
-    content_path = cfg.get("doremi", {}).get("content_path", "/gui")
+    # FTP-Pfad /gui/ entspricht intern /incoming/gui/ auf dem Doremi-Dateisystem
+    content_path = cfg.get("doremi", {}).get("content_path", "/incoming/gui")
 
     # Schnell-Check: ist DCP überhaupt in /gui?
     if not _ftp_schnell_pruefen(cfg, dcp_name):
