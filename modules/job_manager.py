@@ -156,14 +156,23 @@ def hole_retry_pending():
 
 def _berechne_retry_phase(job):
     """Berechnet ab welcher Phase ein Job wiederholt werden soll.
-    Wenn ingest_job_id=0 (fehlgeschlagener Ingest) wird Phase 3 erzwungen."""
-    if job.get("error_phase") == 1:
+
+    Priorität: error_phase (wenn gesetzt) → direkt diese Phase wiederholen.
+    Fallback: last_success_phase + 1 (wenn error_phase fehlt).
+    Sonderfall: Wenn phase >= 4 aber ingest_job_id fehlt/ungültig → Phase 3.
+    """
+    error_phase = job.get("error_phase")
+    # Phase 1 explizit
+    if error_phase == 1:
         return 1
-    last = job.get("last_success_phase") or 0
-    phase = max(1, last + 1)
-    # Sonderfall: ingest_job_id=0 bedeutet Ingest nie korrekt gestartet.
-    # Auch wenn last_success_phase=3, muss Ingest (Phase 3) wiederholt werden.
-    if job.get("ingest_job_id") == 0 and phase >= 4:
+    # error_phase >= 2 → direkt diese Phase wiederholen (genaueste Information)
+    if error_phase and error_phase >= 2:
+        phase = error_phase
+    else:
+        # Fallback: last_success_phase + 1
+        phase = max(1, (job.get("last_success_phase") or 0) + 1)
+    # Monitoring (Phase 4) ohne gültige Ingest-ID macht keinen Sinn
+    if phase >= 4 and job.get("ingest_job_id") in (0, None):
         return 3
     return phase
 
@@ -289,6 +298,20 @@ def bereinige_alte_jobs(tage=7):
         if len(data["jobs"]) < vorher:
             _speichere(data)
     return vorher - len(data.get("jobs", []))
+
+
+def loesche_abgeschlossene_jobs():
+    """Löscht alle Jobs mit Status 'error' oder 'done'. Gibt Anzahl zurück."""
+    with _lock:
+        data = _lade()
+        vorher = len(data["jobs"])
+        data["jobs"] = [
+            j for j in data["jobs"]
+            if j.get("current_status") in ("running", "retry_pending")
+        ]
+        if len(data["jobs"]) < vorher:
+            _speichere(data)
+    return vorher - len(data["jobs"])
 
 
 def _parse_ts(ts_str):

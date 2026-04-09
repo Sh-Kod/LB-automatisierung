@@ -672,15 +672,13 @@ def _ingest_starten(job_id):
             f"FTP-Upload möglicherweise unvollständig."
         )
 
-    # Exakten ASSETMAP-Dateinamen via FTP ermitteln (statt .xml hardcoden)
-    assetmap_name = _ftp_assetmap_name(cfg, dcp_name)
-    if not assetmap_name:
-        raise RuntimeError(
-            f"Kein ASSETMAP-File in /gui/{dcp_name}/ gefunden. "
-            f"FTP-Upload möglicherweise unvollständig."
-        )
-
-    assetmap_pfad = f"{content_path}/{dcp_name}/{assetmap_name}"
+    # Ingest-Pfad: Verzeichnis des DCP (Doremi findet ASSETMAP intern)
+    # Format: {content_path}/{dcp_name}
+    # In config.yaml änderbar: doremi.content_path (default: /gui)
+    assetmap_pfad = f"{content_path}/{dcp_name}"
+    logging.getLogger("dcp_automatisierung").info(
+        f"[Ingest] Starte IngestAddJob mit Pfad: {assetmap_pfad}"
+    )
 
     # Ingest via nativer TCP API (Port 11730) starten
     from modules import doremi_api
@@ -1077,6 +1075,13 @@ def bearbeite_befehl(text):
             ).start()
         else:
             telegram_bot.sende_nachricht(f"Job '{job_id}' nicht gefunden oder nicht wiederholbar.")
+
+    elif low == "/jobs_loeschen":
+        anzahl = job_manager.loesche_abgeschlossene_jobs()
+        telegram_bot.sende_nachricht(
+            f"{anzahl} Job(s) gelöscht (Fehler + Fertig).\n"
+            f"Laufende Jobs bleiben erhalten."
+        )
 
     elif low == "/pause":
         pausiert = toggle_pause()
