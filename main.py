@@ -801,13 +801,24 @@ def _monitoring_ueberwachen(job_id):
                     letzter_scan_ts = time.time()
                     neuer_job = doremi_api.suche_laufenden_ingest_job(ip, max_scan=20)
                     if neuer_job is not None and neuer_job != ingest_job_id:
+                        # Prüfen ob der gefundene Job bereits fertig (success) ist
+                        try:
+                            sc_neu, sn_neu, _ = doremi_api.ingest_status(ip, neuer_job)
+                        except Exception:
+                            sc_neu, sn_neu = 2, "running"
                         log.info(
-                            f"[Monitoring] Manuell gestarteter Ingest gefunden: "
-                            f"job_id={neuer_job} – wechsle Monitoring"
+                            f"[Monitoring] Job gefunden: "
+                            f"job_id={neuer_job}, status={sn_neu}({sc_neu})"
                         )
                         job_manager.speichere_ingest_id(job["id"], neuer_job)
                         ingest_job_id = neuer_job
-                        pending_seit  = time.time()   # Pending-Timer zurücksetzen
+                        pending_seit  = time.time()
+                        if sc_neu == 4:  # Bereits fertig!
+                            telegram_bot.sende_nachricht(
+                                f"Ingest {dcp_name} abgeschlossen "
+                                f"(job_id={neuer_job}, success)"
+                            )
+                            break  # Monitoring-Loop beenden
                         telegram_bot.sende_nachricht(
                             f"Ingest {dcp_name} gestartet! "
                             f"Überwache Doremi job_id={neuer_job}..."
