@@ -1,6 +1,7 @@
 """
 Doremi DCP2000 – HTTP Web Interface API
 Startet Ingest über das Web-Interface (SCHEDULE_INGEST_TASK)
+und überwacht den Fortschritt über die Monitor-Seite.
 
 Vorteil gegenüber KLV TCP: Zuverlässig, browser-kompatibel,
 kein binäres Protokoll nötig.
@@ -15,11 +16,16 @@ Ingest: POST http://{ip}/web/sys_control/ingest_manager/ajax.php
                 tasks[0][description], tasks[0][type]=PackagingList
                 destination=, pingest=false
 
+Monitor: GET http://{ip}/web/sys_control/index.php?page=ingest_manager/ingest_monitor.php
+         HTML-Tabelle mit job_id (checkbox value), Status-Icon und DCP-Beschreibung.
+         Icons: success_16.png = Erfolg, error-icon-16.png = Fehler
+
 Benötigt: pip install requests
 """
 
 import logging
 import os
+import re
 import glob as glob_mod
 
 log = logging.getLogger("dcp_automatisierung")
@@ -111,3 +117,83 @@ def starte_ingest(ip, phpsessid, dcp_name, pkl_datei):
         return True
     except Exception as e:
         raise RuntimeError(f"SCHEDULE_INGEST_TASK fehlgeschlagen: {e}")
+
+
+def pruefe_ingest_status(ip, phpsessid, dcp_name):
+    """
+    Liest die Doremi Ingest-Monitor-Seite und sucht den Job für dcp_name.
+
+    Gibt (job_id, status) zurück:
+      - job_id: Integer (Doremi-Job-ID) oder None wenn nicht gefunden
+      - status:  "success"   → success_16.png
+                 "error"     → error-icon-16.png (oder ähnlich)
+                 "pending"   → Job gefunden, aber noch kein Abschluss-Icon
+                 "not_found" → dcp_name nicht in der Tabelle
+
+    Bei mehreren Treffern mit gleichem Namen wird der Job mit der
+    höchsten Job-ID (= aktuellster) zurückgegeben.
+    """
+    try:
+        import requests
+    except ImportError:
+        raise RuntimeError("requests nicht installiert: pip install requests")
+
+    url = (
+        f"http://{ip}/web/sys_control/index.php"
+        f"?page=ingest_manager/ingest_monitor.php"
+    )
+    cookies = {"PHPSESSID": phpsessid, "interfaceSize": "auto"}
+
+    try:
+        resp = requests.get(url, cookies=cookies, timeout=20)
+        resp.raise_for_status()
+        html = resp.text
+    except Exception as e:
+        raise RuntimeError(f"Monitor-Seite nicht erreichbar: {e}")
+
+    # HTML-Tabelle parsen: jede <tr> auf Job-ID, Icon und Beschreibung prüfen
+    rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", html, re.DOTALL | re.IGNORECASE)
+    treffer = []
+    for row_html in rows:
+        # Job-ID aus checkbox value
+        jid_m = re.search(
+            r'<input[^>]+value=["\'](\d+)["\']',
+            row_html,
+            re.IGNORECASE,
+        )
+        if not jid_m:
+            continue
+        job_id = int(jid_m.group(1))
+
+        # Status-Icon src
+        icon_m = re.search(
+            r'<img[^>]+src=["\']([^"\']+)["\']',
+            row_html,
+            re.IGNORECASE,
+        )
+        icon_src = icon_m.group(1) if icon_m else ""
+
+        # DCP-Beschreibung aus <label>
+        label_m = re.search(r"<label[^>]*>([^<]+)</label>", row_html, re.IGNORECASE)
+        if not label_m:
+            continue
+        beschreibung = label_m.group(1).strip()
+
+        if beschreibung == dcp_name:
+            if "success_16" in icon_src:
+                status = "success"
+            elif "error" in icon_src.lower():
+                status = "error"
+            else:
+                status = "pending"
+            treffer.append((job_id, status))
+
+    if not treffer:
+        log.debug(f"[Web] Monitor: '{dcp_name}' nicht gefunden")
+        return None, "not_found"
+
+    # Höchste Job-ID = aktuellster Job
+    treffer.sort(key=lambda x: x[0], reverse=True)
+    job_id, status = treffer[0]
+    log.info(f"[Web] Monitor: '{dcp_name}' → job_id={job_id}, status={status}")
+    return job_id, status

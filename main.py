@@ -230,29 +230,48 @@ def queue_worker():
             except Exception:
                 telegram_bot.sende_nachricht(f"Bild: {os.path.basename(bildpfad)}")
 
-            # OCR + Typ-Erkennung
+            # JPG-Dateiname als primärer Vorschlag
+            jpg_dateiname = os.path.splitext(os.path.basename(bildpfad))[0]
+            jpg_vorschlag = _bereinige_dcp_name(jpg_dateiname) if jpg_dateiname else None
+            if not jpg_vorschlag:
+                jpg_vorschlag = None
+
+            # OCR + Typ-Erkennung (sekundär)
             ocr_text = ""
             try:
                 ocr_text = analyzer.lese_text_aus_bild(bildpfad)
             except Exception:
                 pass
 
-            typ, vorschlag = _erkenne_typ_und_vorschlag(ocr_text)
+            typ, ocr_vorschlag = _erkenne_typ_und_vorschlag(ocr_text)
 
             # Dialog aufbauen
             t = _trenn()
             msg = f"{t}\n"
+            if jpg_vorschlag:
+                msg += f"Dateiname:\n{jpg_vorschlag}\n\n"
             if ocr_text:
-                msg += f"OCR-Text:\n{ocr_text[:300].strip()}\n\n"
+                msg += f"OCR-Text:\n{ocr_text[:200].strip()}\n\n"
             if typ:
                 msg += f"Typ erkannt: {typ}\n\n"
-            if vorschlag:
-                msg += f"Vorschlag:\n{vorschlag}\n\n"
-                msg += "[1]  Vorschlag übernehmen\n"
+            if ocr_vorschlag:
+                msg += f"OCR-Vorschlag:\n{ocr_vorschlag}\n\n"
+
+            if jpg_vorschlag and ocr_vorschlag:
+                msg += "[1]  Dateinamen übernehmen\n"
+                msg += "[2]  OCR-Vorschlag übernehmen\n"
+                msg += "[3]  Eigenen Namen eingeben\n"
+                msg += "[4]  Überspringen\n"
+            elif jpg_vorschlag:
+                msg += "[1]  Dateinamen übernehmen\n"
+                msg += "[2]  Eigenen Namen eingeben\n"
+                msg += "[3]  Überspringen\n"
+            elif ocr_vorschlag:
+                msg += "[1]  OCR-Vorschlag übernehmen\n"
                 msg += "[2]  Eigenen Namen eingeben\n"
                 msg += "[3]  Überspringen\n"
             else:
-                msg += "Kein Typ erkannt – bitte Namen eingeben\n\n"
+                msg += "Kein Vorschlag – bitte Namen eingeben\n\n"
                 msg += "[1]  Namen eingeben\n"
                 msg += "[2]  Überspringen\n"
             msg += f"{t}\n(Timeout: 60 Min)"
@@ -268,9 +287,25 @@ def queue_worker():
             final_name = None
             skip = False
 
-            if vorschlag:
+            if jpg_vorschlag and ocr_vorschlag:
                 if a == "1":
-                    final_name = vorschlag
+                    final_name = jpg_vorschlag
+                elif a == "2":
+                    final_name = ocr_vorschlag
+                elif a == "3":
+                    telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
+                    a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
+                    if a2 is None:
+                        _dialog_zeitüberschreitung(item["id"])
+                        continue
+                    final_name = a2.strip()
+                elif a in ("4", "/skip"):
+                    skip = True
+                else:
+                    final_name = a  # direkte Namenseingabe
+            elif jpg_vorschlag:
+                if a == "1":
+                    final_name = jpg_vorschlag
                 elif a == "2":
                     telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
                     a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
@@ -281,7 +316,21 @@ def queue_worker():
                 elif a in ("3", "/skip"):
                     skip = True
                 else:
-                    final_name = a  # direkte Namenseingabe
+                    final_name = a
+            elif ocr_vorschlag:
+                if a == "1":
+                    final_name = ocr_vorschlag
+                elif a == "2":
+                    telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
+                    a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
+                    if a2 is None:
+                        _dialog_zeitüberschreitung(item["id"])
+                        continue
+                    final_name = a2.strip()
+                elif a in ("3", "/skip"):
+                    skip = True
+                else:
+                    final_name = a
             else:
                 if a == "1":
                     telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
@@ -785,12 +834,28 @@ def _ingest_starten(job_id):
     phpsessid = doremi_web.login(ip, http_user, http_pass)
     doremi_web.starte_ingest(ip, phpsessid, dcp_name, pkl_datei)
 
-    # Kurz warten, dann Job-ID via KLV IngestGetJobList ermitteln
-    time.sleep(3)
-    ingest_job_id = _suche_ingest_job_id(ip)
-    if ingest_job_id is None:
+    # Job-ID via HTTP-Monitor-Seite ermitteln (zuverlässiger als KLV)
+    # Ingest kann in 2-3 Sekunden abgeschlossen sein → mehrere Versuche
+    ingest_job_id = 0
+    for versuch in range(4):
+        time.sleep(2)
+        try:
+            monitor_job_id, monitor_status = doremi_web.pruefe_ingest_status(
+                ip, phpsessid, dcp_name
+            )
+            if monitor_job_id is not None:
+                ingest_job_id = monitor_job_id
+                log.info(
+                    f"[Ingest] Job-ID aus Monitor-Seite: {ingest_job_id}"
+                    f" (status={monitor_status})"
+                )
+                break
+            log.debug(f"[Ingest] Job noch nicht auf Monitor-Seite (Versuch {versuch + 1}/4)")
+        except Exception as e:
+            log.warning(f"[Ingest] Monitor-Seite nicht auswertbar: {e}")
+            break
+    if ingest_job_id == 0:
         log.warning("[Ingest] Job-ID nicht ermittelbar – verwende Sentinel 0")
-        ingest_job_id = 0
 
     job_manager.speichere_ingest_id(job_id, ingest_job_id)
     telegram_bot.sende_nachricht(
@@ -831,94 +896,86 @@ def _monitoring_ueberwachen(job_id):
         )
 
     log = logging.getLogger("dcp_automatisierung")
+    from modules import doremi_web
 
-    # ── FTP-Monitoring (job_id=0: HTTP-Ingest, KLV-ID unbekannt) ────────────
-    # Doremi löscht /data/incoming/gui/{dcp_name}/ nach erfolgreichem Ingest.
-    # Wir pollen den FTP-Ordner bis er verschwindet.
-    if ingest_job_id == 0:
-        log.info(f"[Monitoring] FTP-Monitoring für '{dcp_name}' (HTTP-Ingest)")
-        deadline_ftp = time.time() + 30 * 60   # max 30 Minuten
+    if ingest_job_id != 0:
+        # ── HTTP-Monitoring über Doremi Monitor-Seite ─────────────────────────
+        # Zuverlässig: erkennt "success" und "error" direkt aus der HTML-Tabelle.
+        log.info(f"[Monitoring] HTTP-Monitoring für '{dcp_name}' (job_id={ingest_job_id})")
+        http_user = cfg.get("doremi", {}).get("web_user", "admin")
+        http_pass = cfg.get("doremi", {}).get("web_pass", "1234")
+
+        phpsessid = None
+        try:
+            phpsessid = doremi_web.login(ip, http_user, http_pass)
+        except Exception as e:
+            log.warning(f"[Monitoring] HTTP-Login fehlgeschlagen: {e} – Fallback auf FTP")
+
+        deadline = time.time() + 30 * 60
+        gemeldet = False
+
+        while time.time() < deadline:
+            if phpsessid:
+                try:
+                    _, status = doremi_web.pruefe_ingest_status(ip, phpsessid, dcp_name)
+                    if status == "success":
+                        telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
+                        break
+                    elif status == "error":
+                        raise RuntimeError(
+                            f"Ingest fehlgeschlagen laut Doremi-Monitor: {dcp_name}"
+                        )
+                    elif status == "not_found":
+                        # Job nicht mehr auf Monitor-Seite (z.B. nach Doremi-Neustart)
+                        # Fallback: FTP-Ordner-Check
+                        if not _ftp_ordner_existiert(cfg, dcp_name):
+                            telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
+                            break
+                    # status == "pending": weiter warten
+                except RuntimeError:
+                    raise
+                except Exception as e:
+                    log.warning(f"[Monitoring] Monitor-Seite Fehler: {e} – PHPSESSID erneuern")
+                    try:
+                        phpsessid = doremi_web.login(ip, http_user, http_pass)
+                    except Exception:
+                        phpsessid = None
+            else:
+                # kein PHPSESSID → FTP-Fallback
+                if not _ftp_ordner_existiert(cfg, dcp_name):
+                    telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
+                    break
+
+            if not gemeldet and (time.time() - (deadline - 30 * 60)) > 120:
+                telegram_bot.sende_nachricht(f"Ingest {dcp_name} läuft – warte auf Abschluss...")
+                gemeldet = True
+            time.sleep(10)
+        else:
+            telegram_bot.sende_nachricht(
+                f"Ingest {dcp_name}: 30 Min. Timeout – bitte Doremi prüfen."
+            )
+
+    else:
+        # ── FTP-Monitoring (Fallback: job_id=0, Monitor-Seite nicht auswertbar) ─
+        # Doremi löscht den FTP-Ordner nach erfolgreichem Ingest.
+        log.info(f"[Monitoring] FTP-Monitoring für '{dcp_name}' (Fallback, job_id=0)")
+        deadline_ftp = time.time() + 30 * 60
         gemeldet = False
         while time.time() < deadline_ftp:
             time.sleep(15)
             if not _ftp_ordner_existiert(cfg, dcp_name):
                 log.info(f"[Monitoring] FTP-Ordner verschwunden → Ingest abgeschlossen")
-                telegram_bot.sende_nachricht(
-                    f"Ingest abgeschlossen: {dcp_name}"
-                )
+                telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
                 break
             if not gemeldet and (time.time() - (deadline_ftp - 30 * 60)) > 120:
-                telegram_bot.sende_nachricht(
-                    f"Ingest {dcp_name} läuft – warte auf Abschluss..."
-                )
+                telegram_bot.sende_nachricht(f"Ingest {dcp_name} läuft – warte auf Abschluss...")
                 gemeldet = True
         else:
             telegram_bot.sende_nachricht(
                 f"Ingest {dcp_name}: 30 Min. Timeout – bitte Doremi prüfen."
             )
 
-        # Aufräumen
-        _ftp_ordner_loeschen(cfg, dcp_name)
-        try:
-            dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
-            if os.path.exists(dcp_pfad_lokal):
-                dcp_archiv = cfg["ordner"]["dcp_archiv"]
-                os.makedirs(dcp_archiv, exist_ok=True)
-                ziel = os.path.join(dcp_archiv, dcp_name)
-                if os.path.exists(ziel):
-                    shutil.rmtree(ziel)
-                shutil.move(dcp_pfad_lokal, ziel)
-        except Exception:
-            pass
-        return
-
-    # ── KLV-Monitoring (job_id bekannt) ─────────────────────────────────────
-    from modules import doremi_api
-    deadline = time.time() + 30 * 60
-    pending_warnung_gesendet = False
-    letzter_progress = -1
-
-    log.info(f"[Monitoring] KLV-Monitoring für job_id={ingest_job_id}")
-    pending_seit = time.time()
-
-    while time.time() < deadline:
-        try:
-            status_code, status_name, progress = doremi_api.ingest_status(
-                ip, ingest_job_id
-            )
-
-            if progress != letzter_progress and progress % 25 == 0 and progress > 0:
-                telegram_bot.sende_nachricht(
-                    f"Ingest {dcp_name}: {progress}% ({status_name})"
-                )
-                letzter_progress = progress
-
-            if status_code == 4:    # success
-                telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
-                break
-            elif status_code in (5, 7):   # aborted / failed
-                raise RuntimeError(
-                    f"Ingest fehlgeschlagen: status={status_name}({status_code})"
-                )
-            elif status_code == 0:  # pending
-                warte_sek = time.time() - pending_seit
-                if warte_sek >= 120 and not pending_warnung_gesendet:
-                    telegram_bot.sende_nachricht(
-                        f"Ingest {dcp_name} seit {int(warte_sek/60)} Min. ausstehend.\n"
-                        f"Doremi-Webinterface prüfen."
-                    )
-                    pending_warnung_gesendet = True
-
-        except (ConnectionError, OSError, TimeoutError) as e:
-            log.warning(
-                f"[Monitoring] TCP-Fehler bei IngestGetJobStatus: {e} – nächster Versuch in 15s"
-            )
-            time.sleep(15)
-            continue
-
-        time.sleep(10)
-
-    # FTP-Ordner auf Doremi aufräumen + DCP lokal ins Archiv verschieben
+    # ── Aufräumen (gemeinsam für beide Pfade) ────────────────────────────────
     _ftp_ordner_loeschen(cfg, dcp_name)
     try:
         dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
