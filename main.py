@@ -757,6 +757,7 @@ def _monitoring_ueberwachen(job_id):
     deadline = time.time() + 30 * 60   # max 30 Minuten
     pending_warnung_gesendet = False
     letzter_progress = -1
+    letzter_scan_ts  = 0.0             # Zeitstempel letzter Job-Scan
 
     log = logging.getLogger("dcp_automatisierung")
     log.info(f"[Monitoring] Starte Monitoring für job_id={ingest_job_id}")
@@ -781,17 +782,36 @@ def _monitoring_ueberwachen(job_id):
                 raise RuntimeError(
                     f"Ingest fehlgeschlagen: status={status_name}({status_code})"
                 )
-            elif status_code == 0 and not pending_warnung_gesendet:
-                # Job ist pending – Doremi hat Ingest noch nicht gestartet
-                warte_min = int((time.time() - pending_seit) / 60)
-                if warte_min >= 2:
+            elif status_code == 0:  # pending
+                warte_sek = time.time() - pending_seit
+
+                # Warnung nach 2 Min. – Doremi hat Ingest nicht automatisch gestartet
+                if warte_sek >= 120 and not pending_warnung_gesendet:
                     telegram_bot.sende_nachricht(
-                        f"Ingest {dcp_name} seit {warte_min} Min. in 'pending'.\n"
+                        f"Ingest {dcp_name} seit {int(warte_sek/60)} Min. in 'pending'.\n"
                         f"Doremi startet Ingest nicht automatisch.\n"
-                        f"Bitte manuell im Doremi-Webinterface auf 'Ingest' klicken\n"
-                        f"oder /retry {job.get('id', '?')} nach manuellem Start."
+                        f"Bitte manuell im Doremi-Webinterface auf 'Ingest' klicken."
                     )
                     pending_warnung_gesendet = True
+
+                # Alle 30 Sek. (ab 1 Min. Wartezeit): Scan nach manuell gestarteten Jobs
+                # Hintergrund: wenn job_id=0 ein Dummy ist, erstellt der manuelle Klick
+                # eine NEUE job_id (z.B. 1, 2, ...) mit status=running
+                if warte_sek >= 60 and (time.time() - letzter_scan_ts) >= 30:
+                    letzter_scan_ts = time.time()
+                    neuer_job = doremi_api.suche_laufenden_ingest_job(ip, max_scan=20)
+                    if neuer_job is not None and neuer_job != ingest_job_id:
+                        log.info(
+                            f"[Monitoring] Manuell gestarteter Ingest gefunden: "
+                            f"job_id={neuer_job} – wechsle Monitoring"
+                        )
+                        job_manager.speichere_ingest_id(job["id"], neuer_job)
+                        ingest_job_id = neuer_job
+                        pending_seit  = time.time()   # Pending-Timer zurücksetzen
+                        telegram_bot.sende_nachricht(
+                            f"Ingest {dcp_name} gestartet! "
+                            f"Überwache Doremi job_id={neuer_job}..."
+                        )
             # 2=running, 3=scheduled → weiter warten
 
         except (ConnectionError, OSError, TimeoutError) as e:

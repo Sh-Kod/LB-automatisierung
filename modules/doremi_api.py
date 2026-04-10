@@ -448,6 +448,29 @@ def suche_aktive_ingest_job(ip, max_scan=99):
     return None
 
 
+def suche_laufenden_ingest_job(ip, max_scan=20):
+    """Sucht einen LAUFENDEN Ingest-Job (status=running/scheduled, NICHT pending).
+
+    Wird im Monitoring verwendet um zu erkennen wenn der Benutzer manuell
+    im Doremi-Webinterface auf 'Ingest' geklickt hat.
+    job_id=0 mit status=pending wird bewusst ignoriert (Sentinel-Wert).
+
+    Gibt die job_id (int) zurück wenn ein laufender Job gefunden wurde, sonst None.
+    """
+    for job_id_int in range(1, max_scan + 1):   # Start bei 1, 0 ist Sentinel
+        try:
+            status_code, status_name, _ = ingest_status(ip, job_id_int)
+            if status_code in (2, 3):  # running, scheduled
+                log.info(
+                    f"[Doremi API] Laufender Ingest-Job gefunden: "
+                    f"job_id={job_id_int}, status={status_name}({status_code})"
+                )
+                return job_id_int
+        except (RuntimeError, ConnectionError, OSError, TimeoutError):
+            pass
+    return None
+
+
 def ingest_cancel(ip, job_id):
     """
     Bricht einen Ingest-Job ab (IngestCancelJob, Befehl 0x071100).
