@@ -35,6 +35,7 @@ KLV_HEADER = bytes([
 
 # Befehlsschlüssel (Request)
 CMD_INGEST_ADD_JOB    = bytes([0x07, 0x0F, 0x00])
+CMD_INGEST_CANCEL_JOB = bytes([0x07, 0x11, 0x00])   # IngestCancelJob
 CMD_INGEST_GET_STATUS = bytes([0x07, 0x1D, 0x00])
 CMD_INGEST_GET_LIST   = bytes([0x07, 0x19, 0x00])   # IngestGetJobList (Diagnose)
 CMD_WHO_AM_I          = bytes([0x0E, 0x0B, 0x00])
@@ -42,6 +43,7 @@ CMD_GET_API_VERSION   = bytes([0x05, 0x05, 0x00])   # GetAPIProtocolVersion
 
 # Antwortschlüssel (Response)
 RESP_INGEST_ADD_JOB    = bytes([0x07, 0x10, 0x00])
+RESP_INGEST_CANCEL_JOB = bytes([0x07, 0x12, 0x00])
 RESP_INGEST_GET_STATUS = bytes([0x07, 0x1E, 0x00])
 RESP_WHO_AM_I          = bytes([0x0E, 0x0C, 0x00])
 
@@ -377,6 +379,33 @@ def ingest_starten(ip, assetmap_pfad, content_uuid=None):
     gefunden = suche_aktive_ingest_job(ip, max_scan=99)
     if gefunden:
         job_id_vorhanden, sc, sn = gefunden
+        if sc == 0:  # pending → versuche zu canceln und neu zu starten
+            log.info(
+                f"[Doremi API] Pending Job job_id={job_id_vorhanden} gefunden – "
+                f"versuche zu canceln und IngestAddJob neu zu starten..."
+            )
+            try:
+                import time as _time
+                ingest_cancel(ip, job_id_vorhanden)
+                _time.sleep(1)
+                # Nach Cancel: erneuter IngestAddJob-Versuch (primäre Varianten)
+                for pfad in varianten[:6]:
+                    try:
+                        job_id_neu = _ingest_add_job_einzel(ip, pfad)
+                        log.info(
+                            f"[Doremi API] IngestAddJob nach Cancel OK – "
+                            f"Pfad: '{pfad}', job_id={job_id_neu}"
+                        )
+                        return job_id_neu
+                    except RuntimeError as e:
+                        log.debug(f"[Doremi API] Retry '{pfad}': {e}")
+                log.warning(
+                    "[Doremi API] IngestAddJob nach Cancel weiterhin fehlgeschlagen – "
+                    "übernehme job_id vom Cancel (möglicherweise neu vergeben)"
+                )
+            except Exception as e:
+                log.warning(f"[Doremi API] IngestCancelJob fehlgeschlagen: {e}")
+
         log.info(
             f"[Doremi API] Vorhandenen Ingest-Job übernommen: "
             f"job_id={job_id_vorhanden}, status={sn}({sc})"
@@ -417,6 +446,26 @@ def suche_aktive_ingest_job(ip, max_scan=99):
         except (RuntimeError, ConnectionError, OSError, TimeoutError):
             pass  # Ungültige job_id oder Verbindungsfehler → überspringen
     return None
+
+
+def ingest_cancel(ip, job_id):
+    """
+    Bricht einen Ingest-Job ab (IngestCancelJob, Befehl 0x071100).
+
+    Nützlich wenn der Doremi automatisch einen pending-Job erstellt hat
+    und IngestAddJob deshalb mit Fehler 1 scheitert.
+    Gibt (cmd_key_hex, payload_hex) zurück.
+    """
+    payload = struct.pack(">q", job_id)
+    nachricht, _ = _baue_nachricht(CMD_INGEST_CANCEL_JOB, payload)
+    with _verbinde(ip) as sock:
+        sock.sendall(nachricht)
+        cmd_key, resp_payload = _lese_antwort(sock)
+    log.info(
+        f"[Doremi API] IngestCancelJob job_id={job_id} – "
+        f"key={cmd_key.hex()}, payload={resp_payload.hex()}"
+    )
+    return cmd_key.hex(), resp_payload.hex()
 
 
 def ingest_status(ip, job_id):
