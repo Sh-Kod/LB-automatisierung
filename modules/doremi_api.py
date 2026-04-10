@@ -336,13 +336,16 @@ def _ingest_add_job_einzel(ip, assetmap_pfad):
     return job_id
 
 
-def ingest_starten(ip, assetmap_pfad, content_uuid=None):
+def ingest_starten(ip, assetmap_pfad, content_uuid=None, extra_pfade=None):
     """
     Startet Ingest auf dem Doremi via TCP API.
 
     assetmap_pfad: Pfad zur ASSETMAP-Datei auf dem Doremi-Filesystem.
     content_uuid:  Optionale Content-UUID aus der ASSETMAP.xml (urn:uuid:...).
                    Wird als weitere Variante versucht, falls Pfade scheitern.
+    extra_pfade:   Optionale Liste zusätzlicher Pfade (z.B. SCP-Pfade nach
+                   /data/incoming/), die VOR den automatisch generierten
+                   Varianten versucht werden (höchste Priorität).
 
     Probiert automatisch mehrere Pfad-Varianten + UUID-Formate.
     Gibt die Ingest-Job-ID zurück (int).
@@ -357,6 +360,14 @@ def ingest_starten(ip, assetmap_pfad, content_uuid=None):
             f"urn:uuid:{uuid_clean}",   # vollständige URN
             uuid_clean,                  # nur UUID-String
         ]
+
+    # Extra-Pfade (z.B. SCP-Pfade /data/incoming/...) mit höchster Priorität
+    # Sie werden VOR den automatisch generierten FTP-Varianten versucht.
+    if extra_pfade:
+        seen = set(varianten)
+        prepend = [p for p in extra_pfade if p and p not in seen]
+        if prepend:
+            varianten = prepend + varianten
 
     log.info(f"[Doremi API] Versuche {len(varianten)} Varianten: {varianten}")
 
@@ -449,18 +460,19 @@ def suche_aktive_ingest_job(ip, max_scan=99):
 
 
 def suche_laufenden_ingest_job(ip, max_scan=20):
-    """Sucht einen LAUFENDEN Ingest-Job (status=running/scheduled, NICHT pending).
+    """Sucht einen laufenden ODER gerade abgeschlossenen Ingest-Job.
 
     Wird im Monitoring verwendet um zu erkennen wenn der Benutzer manuell
     im Doremi-Webinterface auf 'Ingest' geklickt hat.
     job_id=0 mit status=pending wird bewusst ignoriert (Sentinel-Wert).
 
-    Gibt die job_id (int) zurück wenn ein laufender Job gefunden wurde, sonst None.
+    Status-Priorität: success(4) > running(2) > scheduled(3)
+    Gibt die job_id (int) zurück wenn ein relevanter Job gefunden wurde, sonst None.
     """
     for job_id_int in range(1, max_scan + 1):   # Start bei 1, 0 ist Sentinel
         try:
             status_code, status_name, _ = ingest_status(ip, job_id_int)
-            if status_code in (2, 3):  # running, scheduled
+            if status_code in (2, 3, 4):  # running, scheduled, success
                 log.info(
                     f"[Doremi API] Laufender Ingest-Job gefunden: "
                     f"job_id={job_id_int}, status={status_name}({status_code})"

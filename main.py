@@ -675,18 +675,72 @@ def _lese_assetmap_uuid(cfg, dcp_name, assetmap_name):
     return None
 
 
+def _ftp_pkl_name(cfg, dcp_name):
+    """Sucht die PKL-Datei (pkl_*.xml) im FTP-Verzeichnis des Doremi."""
+    import ftplib
+    try:
+        with ftplib.FTP(timeout=15) as ftp:
+            ftp.connect(cfg["doremi"]["ip"], 21)
+            ftp.login(cfg["doremi"]["ftp_user"], cfg["doremi"]["ftp_pass"])
+            ftp.set_pasv(True)
+            ftp.cwd(f"/gui/{dcp_name}")
+            dateien = ftp.nlst()
+            for d in dateien:
+                if d.lower().startswith("pkl_") and d.lower().endswith(".xml"):
+                    return d
+    except Exception:
+        pass
+    return None
+
+
+def _suche_ingest_job_id(ip):
+    """
+    Liest IngestGetJobList via KLV und versucht die aktive Job-ID zu ermitteln.
+    Gibt die höchste gefundene Job-ID zurück oder None wenn nicht möglich.
+    Format-Annahme: [count:int32 BE][job_id:int64 BE]...
+    """
+    from modules import doremi_api
+    log = logging.getLogger("dcp_automatisierung")
+    try:
+        _, payload_hex = doremi_api.get_ingest_list(ip)
+        if not payload_hex:
+            return None
+        payload = bytes.fromhex(payload_hex)
+        if len(payload) < 4:
+            return None
+        count = int.from_bytes(payload[:4], "big")
+        if count == 0 or count > 100:
+            return None
+        job_ids = []
+        offset = 4
+        for _ in range(count):
+            if offset + 8 > len(payload):
+                break
+            jid = int.from_bytes(payload[offset:offset + 8], "big", signed=True)
+            if jid > 0:
+                job_ids.append(jid)
+            offset += 8
+        if job_ids:
+            jid = max(job_ids)
+            log.info(f"[Ingest] Job-ID aus IngestGetJobList: {jid}")
+            return jid
+    except Exception as e:
+        log.debug(f"[Ingest] IngestGetJobList-Auswertung fehlgeschlagen: {e}")
+    return None
+
+
 def _ingest_starten(job_id):
     job = job_manager.hole_job(job_id)
     if not job:
         raise RuntimeError(f"Job {job_id} nicht gefunden")
 
-    cfg      = lade_config()
-    ip       = cfg["doremi"]["ip"]
-    dcp_name = job["final_name"]
+    cfg       = lade_config()
+    ip        = cfg["doremi"]["ip"]
+    dcp_name  = job["final_name"]
+    http_user = cfg.get("doremi", {}).get("http_user", "admin")
+    http_pass = cfg.get("doremi", {}).get("http_pass", "1234")
 
-    # Pfad-Prefix: konfigurierbar in config.yaml unter doremi.content_path
-    # FTP-Pfad /gui/ entspricht intern /incoming/gui/ auf dem Doremi-Dateisystem
-    content_path = cfg.get("doremi", {}).get("content_path", "/incoming/gui")
+    log = logging.getLogger("dcp_automatisierung")
 
     # Schnell-Check: ist DCP überhaupt in /gui?
     if not _ftp_schnell_pruefen(cfg, dcp_name):
@@ -701,40 +755,47 @@ def _ingest_starten(job_id):
             f"FTP-Upload möglicherweise unvollständig."
         )
 
-    # Exakten ASSETMAP-Dateinamen via FTP ermitteln
-    assetmap_name = _ftp_assetmap_name(cfg, dcp_name)
-    if not assetmap_name:
+    # PKL-Datei ermitteln – zuerst lokal, dann via FTP
+    pkl_datei = None
+    dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
+    from modules import doremi_web
+    if os.path.exists(dcp_pfad_lokal):
+        try:
+            pkl_datei = doremi_web.finde_pkl_datei(dcp_pfad_lokal)
+            log.info(f"[Ingest] PKL-Datei (lokal): {pkl_datei}")
+        except RuntimeError as e:
+            log.warning(f"[Ingest] PKL lokal nicht gefunden: {e}")
+
+    if not pkl_datei:
+        pkl_datei = _ftp_pkl_name(cfg, dcp_name)
+        if pkl_datei:
+            log.info(f"[Ingest] PKL-Datei (FTP): {pkl_datei}")
+
+    if not pkl_datei:
         raise RuntimeError(
-            f"Kein ASSETMAP-File in /gui/{dcp_name}/ gefunden. "
-            f"FTP-Upload möglicherweise unvollständig."
+            f"Keine PKL-Datei (pkl_*.xml) für '{dcp_name}' gefunden "
+            f"(weder lokal noch auf Doremi-FTP)."
         )
-    # Ingest-Pfad: FTP /gui/ = interner Dateisystem-Pfad /incoming/gui/
-    # Format: {content_path}/{dcp_name}/{assetmap_name}
-    assetmap_pfad = f"{content_path}/{dcp_name}/{assetmap_name}"
-    logging.getLogger("dcp_automatisierung").info(
-        f"[Ingest] Starte IngestAddJob mit Pfad: {assetmap_pfad}"
+
+    # HTTP-Ingest via Doremi-Webinterface
+    telegram_bot.sende_nachricht(
+        f"Starte Ingest via Doremi-Webinterface:\n{dcp_name}\nPKL: {pkl_datei}"
     )
 
-    # Ingest via nativer TCP API (Port 11730) starten
-    from modules import doremi_api
-    log = logging.getLogger("dcp_automatisierung")
+    phpsessid = doremi_web.login(ip, http_user, http_pass)
+    doremi_web.starte_ingest(ip, phpsessid, dcp_name, pkl_datei)
 
-    # Diagnose: WhoAmI prüft ob TCP/KLV-Protokoll grundsätzlich antwortet
-    try:
-        who = doremi_api.who_am_i(ip)
-        log.info(f"[Ingest] Doremi WhoAmI OK: '{who}'")
-    except Exception as e:
-        log.warning(f"[Ingest] Doremi WhoAmI fehlgeschlagen (nicht kritisch): {e}")
+    # Kurz warten, dann Job-ID via KLV IngestGetJobList ermitteln
+    time.sleep(3)
+    ingest_job_id = _suche_ingest_job_id(ip)
+    if ingest_job_id is None:
+        log.warning("[Ingest] Job-ID nicht ermittelbar – verwende Sentinel 0")
+        ingest_job_id = 0
 
-    # Content-UUID aus ASSETMAP.xml lesen (als Fallback für UUID-basiertes Ingest)
-    content_uuid = _lese_assetmap_uuid(cfg, dcp_name, assetmap_name)
-
-    ingest_job_id = doremi_api.ingest_starten(ip, assetmap_pfad, content_uuid=content_uuid)
-
-    # Job-ID für Phase 5 (Monitoring) speichern
     job_manager.speichere_ingest_id(job_id, ingest_job_id)
     telegram_bot.sende_nachricht(
-        f"Ingest gestartet: {dcp_name}\nDoremi job_id={ingest_job_id} – warte auf Abschluss..."
+        f"Ingest gestartet: {dcp_name}\n"
+        f"Doremi job_id={ingest_job_id} – warte auf Abschluss..."
     )
 
 
@@ -788,9 +849,8 @@ def _monitoring_ueberwachen(job_id):
                 # Warnung nach 2 Min. – Doremi hat Ingest nicht automatisch gestartet
                 if warte_sek >= 120 and not pending_warnung_gesendet:
                     telegram_bot.sende_nachricht(
-                        f"Ingest {dcp_name} seit {int(warte_sek/60)} Min. in 'pending'.\n"
-                        f"Doremi startet Ingest nicht automatisch.\n"
-                        f"Bitte manuell im Doremi-Webinterface auf 'Ingest' klicken."
+                        f"Ingest {dcp_name} seit {int(warte_sek/60)} Min. ausstehend.\n"
+                        f"Job läuft möglicherweise bereits – Doremi-Webinterface prüfen."
                     )
                     pending_warnung_gesendet = True
 
@@ -801,13 +861,24 @@ def _monitoring_ueberwachen(job_id):
                     letzter_scan_ts = time.time()
                     neuer_job = doremi_api.suche_laufenden_ingest_job(ip, max_scan=20)
                     if neuer_job is not None and neuer_job != ingest_job_id:
+                        # Prüfen ob der gefundene Job bereits fertig (success) ist
+                        try:
+                            sc_neu, sn_neu, _ = doremi_api.ingest_status(ip, neuer_job)
+                        except Exception:
+                            sc_neu, sn_neu = 2, "running"
                         log.info(
-                            f"[Monitoring] Manuell gestarteter Ingest gefunden: "
-                            f"job_id={neuer_job} – wechsle Monitoring"
+                            f"[Monitoring] Job gefunden: "
+                            f"job_id={neuer_job}, status={sn_neu}({sc_neu})"
                         )
                         job_manager.speichere_ingest_id(job["id"], neuer_job)
                         ingest_job_id = neuer_job
-                        pending_seit  = time.time()   # Pending-Timer zurücksetzen
+                        pending_seit  = time.time()
+                        if sc_neu == 4:  # Bereits fertig!
+                            telegram_bot.sende_nachricht(
+                                f"Ingest {dcp_name} abgeschlossen "
+                                f"(job_id={neuer_job}, success)"
+                            )
+                            break  # Monitoring-Loop beenden
                         telegram_bot.sende_nachricht(
                             f"Ingest {dcp_name} gestartet! "
                             f"Überwache Doremi job_id={neuer_job}..."
@@ -1227,6 +1298,29 @@ def bearbeite_befehl(text):
         else:
             telegram_bot.sende_nachricht("Kein aktiver Ingest-Job gefunden zum Canceln.")
 
+    elif low == "/doremi_scp_test":
+        cfg      = lade_config()
+        ip       = cfg.get("doremi", {}).get("ip", "?")
+        ssh_user = cfg.get("doremi", {}).get("ssh_user", "doremi")
+        ssh_pass = cfg.get("doremi", {}).get("ssh_pass", "doremi")
+        scp_path = cfg.get("doremi", {}).get("scp_path", "/data/incoming")
+        telegram_bot.sende_nachricht(
+            f"Teste SSH-Verbindung zu {ssh_user}@{ip}:22 ..."
+        )
+        try:
+            from modules import scp_upload
+            ok, info = scp_upload.teste_verbindung(ip, ssh_user, ssh_pass)
+            status = "OK" if ok else "FEHLER"
+            telegram_bot.sende_nachricht(
+                f"SSH-Test: {status}\n"
+                f"{'─'*28}\n"
+                f"{info}\n"
+                f"{'─'*28}\n"
+                f"SCP-Ziel: {scp_path}"
+            )
+        except Exception as e:
+            telegram_bot.sende_nachricht(f"SSH-Test FEHLER: {e}")
+
     elif low == "/pause":
         pausiert = toggle_pause()
         if pausiert:
@@ -1262,6 +1356,7 @@ def bearbeite_befehl(text):
             f"/doremi_test           Doremi TCP-Verbindung testen\n"
             f"/doremi_ingest_scan    Aktive Ingest-Jobs suchen\n"
             f"/doremi_cancel_ingest  Pending Ingest-Job abbrechen\n"
+            f"/doremi_scp_test       SSH/SCP-Verbindung testen\n"
             f"{t}"
         )
 
