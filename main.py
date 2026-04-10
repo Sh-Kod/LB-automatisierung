@@ -748,47 +748,61 @@ def _monitoring_ueberwachen(job_id):
     dcp_name      = job["final_name"]
     ingest_job_id = job.get("ingest_job_id")
 
-    if ingest_job_id is None or ingest_job_id == 0:
+    if ingest_job_id is None:
         raise RuntimeError(
-            f"Kein gültiger Ingest-Job für '{dcp_name}' (job_id={ingest_job_id}). "
-            f"Bitte Ingest erneut starten."
+            f"Kein Ingest-Job-ID für '{dcp_name}'. Bitte Ingest erneut starten."
         )
-    else:
-        from modules import doremi_api
-        deadline = time.time() + 30 * 60   # max 30 Minuten
 
-        letzter_progress = -1
-        while time.time() < deadline:
-            try:
-                status_code, status_name, progress = doremi_api.ingest_status(
-                    ip, ingest_job_id
+    from modules import doremi_api
+    deadline = time.time() + 30 * 60   # max 30 Minuten
+    pending_warnung_gesendet = False
+    letzter_progress = -1
+
+    log = logging.getLogger("dcp_automatisierung")
+    log.info(f"[Monitoring] Starte Monitoring für job_id={ingest_job_id}")
+    pending_seit = time.time()
+
+    while time.time() < deadline:
+        try:
+            status_code, status_name, progress = doremi_api.ingest_status(
+                ip, ingest_job_id
+            )
+
+            # Fortschritt nur senden wenn er sich geändert hat (kein Spam)
+            if progress != letzter_progress and progress % 25 == 0 and progress > 0:
+                telegram_bot.sende_nachricht(
+                    f"Ingest {dcp_name}: {progress}% ({status_name})"
                 )
+                letzter_progress = progress
 
-                # Fortschritt nur senden wenn er sich geändert hat (kein Spam)
-                if progress != letzter_progress and progress % 25 == 0 and progress > 0:
+            if status_code == 4:    # success
+                break
+            elif status_code in (5, 7):   # aborted / failed
+                raise RuntimeError(
+                    f"Ingest fehlgeschlagen: status={status_name}({status_code})"
+                )
+            elif status_code == 0 and not pending_warnung_gesendet:
+                # Job ist pending – Doremi hat Ingest noch nicht gestartet
+                warte_min = int((time.time() - pending_seit) / 60)
+                if warte_min >= 2:
                     telegram_bot.sende_nachricht(
-                        f"Ingest {dcp_name}: {progress}% ({status_name})"
+                        f"Ingest {dcp_name} seit {warte_min} Min. in 'pending'.\n"
+                        f"Doremi startet Ingest nicht automatisch.\n"
+                        f"Bitte manuell im Doremi-Webinterface auf 'Ingest' klicken\n"
+                        f"oder /retry {job.get('id', '?')} nach manuellem Start."
                     )
-                    letzter_progress = progress
+                    pending_warnung_gesendet = True
+            # 2=running, 3=scheduled → weiter warten
 
-                if status_code == 4:    # success
-                    break
-                elif status_code in (5, 7):   # aborted / failed
-                    raise RuntimeError(
-                        f"Ingest fehlgeschlagen: status={status_name}({status_code})"
-                    )
-                # 0=pending, 2=running, 3=scheduled → weiter warten
+        except (ConnectionError, OSError, TimeoutError) as e:
+            log.warning(
+                f"[Monitoring] TCP-Fehler bei IngestGetJobStatus: {e} – nächster Versuch in 15s"
+            )
+            time.sleep(15)
+            continue
 
-            except (ConnectionError, OSError, TimeoutError) as e:
-                import logging
-                logging.getLogger("dcp_automatisierung").warning(
-                    f"[Monitoring] TCP-Fehler bei IngestGetJobStatus: {e} – nächster Versuch in 15s"
-                )
-                time.sleep(15)
-                continue
-
-            time.sleep(10)
-        # Timeout ist kein harter Fehler – Ingest läuft weiter auf Doremi
+        time.sleep(10)
+    # Timeout ist kein harter Fehler – Ingest läuft weiter auf Doremi
 
     # FTP-Ordner auf Doremi aufräumen + DCP lokal ins Archiv verschieben
     _ftp_ordner_loeschen(cfg, dcp_name)
@@ -1173,6 +1187,26 @@ def bearbeite_befehl(text):
                 "in job_id 0..99 gefunden."
             )
 
+    elif low == "/doremi_cancel_ingest":
+        cfg = lade_config()
+        ip  = cfg.get("doremi", {}).get("ip", "?")
+        from modules import doremi_api
+        # Findet pending Job und cancelt ihn
+        gefunden = doremi_api.suche_aktive_ingest_job(ip, max_scan=99)
+        if gefunden:
+            jid, sc, sn = gefunden
+            try:
+                key, payload = doremi_api.ingest_cancel(ip, jid)
+                telegram_bot.sende_nachricht(
+                    f"IngestCancelJob gesendet für job_id={jid}.\n"
+                    f"Response: key={key}  raw={payload}\n"
+                    f"Starte nächsten /check um neuen Ingest-Versuch zu starten."
+                )
+            except Exception as e:
+                telegram_bot.sende_nachricht(f"Cancel FEHLER: {e}")
+        else:
+            telegram_bot.sende_nachricht("Kein aktiver Ingest-Job gefunden zum Canceln.")
+
     elif low == "/pause":
         pausiert = toggle_pause()
         if pausiert:
@@ -1205,8 +1239,9 @@ def bearbeite_befehl(text):
             f"/jobs                Fehler & Retry\n"
             f"/pause               Scan pausieren\n"
             f"/neustart /restart   Service neu starten\n"
-            f"/doremi_test         Doremi TCP-Verbindung testen\n"
-            f"/doremi_ingest_scan  Aktive Ingest-Jobs suchen\n"
+            f"/doremi_test           Doremi TCP-Verbindung testen\n"
+            f"/doremi_ingest_scan    Aktive Ingest-Jobs suchen\n"
+            f"/doremi_cancel_ingest  Pending Ingest-Job abbrechen\n"
             f"{t}"
         )
 
