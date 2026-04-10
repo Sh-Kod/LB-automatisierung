@@ -799,6 +799,22 @@ def _ingest_starten(job_id):
     )
 
 
+def _ftp_ordner_existiert(cfg, dcp_name):
+    """Prüft ob /gui/{dcp_name}/ noch auf dem Doremi-FTP vorhanden ist."""
+    import ftplib
+    try:
+        with ftplib.FTP(timeout=15) as ftp:
+            ftp.connect(cfg["doremi"]["ip"], 21)
+            ftp.login(cfg["doremi"]["ftp_user"], cfg["doremi"]["ftp_pass"])
+            ftp.set_pasv(True)
+            ftp.cwd(f"/gui/{dcp_name}")
+            return True   # Ordner existiert noch
+    except ftplib.error_perm:
+        return False       # Ordner nicht mehr da → Doremi hat ihn nach Ingest gelöscht
+    except Exception:
+        return True        # Verbindungsfehler → sicherheitshalber "noch da" annehmen
+
+
 def _monitoring_ueberwachen(job_id):
     job = job_manager.hole_job(job_id)
     if not job:
@@ -814,14 +830,55 @@ def _monitoring_ueberwachen(job_id):
             f"Kein Ingest-Job-ID für '{dcp_name}'. Bitte Ingest erneut starten."
         )
 
+    log = logging.getLogger("dcp_automatisierung")
+
+    # ── FTP-Monitoring (job_id=0: HTTP-Ingest, KLV-ID unbekannt) ────────────
+    # Doremi löscht /data/incoming/gui/{dcp_name}/ nach erfolgreichem Ingest.
+    # Wir pollen den FTP-Ordner bis er verschwindet.
+    if ingest_job_id == 0:
+        log.info(f"[Monitoring] FTP-Monitoring für '{dcp_name}' (HTTP-Ingest)")
+        deadline_ftp = time.time() + 30 * 60   # max 30 Minuten
+        gemeldet = False
+        while time.time() < deadline_ftp:
+            time.sleep(15)
+            if not _ftp_ordner_existiert(cfg, dcp_name):
+                log.info(f"[Monitoring] FTP-Ordner verschwunden → Ingest abgeschlossen")
+                telegram_bot.sende_nachricht(
+                    f"Ingest abgeschlossen: {dcp_name}"
+                )
+                break
+            if not gemeldet and (time.time() - (deadline_ftp - 30 * 60)) > 120:
+                telegram_bot.sende_nachricht(
+                    f"Ingest {dcp_name} läuft – warte auf Abschluss..."
+                )
+                gemeldet = True
+        else:
+            telegram_bot.sende_nachricht(
+                f"Ingest {dcp_name}: 30 Min. Timeout – bitte Doremi prüfen."
+            )
+
+        # Aufräumen
+        _ftp_ordner_loeschen(cfg, dcp_name)
+        try:
+            dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
+            if os.path.exists(dcp_pfad_lokal):
+                dcp_archiv = cfg["ordner"]["dcp_archiv"]
+                os.makedirs(dcp_archiv, exist_ok=True)
+                ziel = os.path.join(dcp_archiv, dcp_name)
+                if os.path.exists(ziel):
+                    shutil.rmtree(ziel)
+                shutil.move(dcp_pfad_lokal, ziel)
+        except Exception:
+            pass
+        return
+
+    # ── KLV-Monitoring (job_id bekannt) ─────────────────────────────────────
     from modules import doremi_api
-    deadline = time.time() + 30 * 60   # max 30 Minuten
+    deadline = time.time() + 30 * 60
     pending_warnung_gesendet = False
     letzter_progress = -1
-    letzter_scan_ts  = 0.0             # Zeitstempel letzter Job-Scan
 
-    log = logging.getLogger("dcp_automatisierung")
-    log.info(f"[Monitoring] Starte Monitoring für job_id={ingest_job_id}")
+    log.info(f"[Monitoring] KLV-Monitoring für job_id={ingest_job_id}")
     pending_seit = time.time()
 
     while time.time() < deadline:
@@ -830,7 +887,6 @@ def _monitoring_ueberwachen(job_id):
                 ip, ingest_job_id
             )
 
-            # Fortschritt nur senden wenn er sich geändert hat (kein Spam)
             if progress != letzter_progress and progress % 25 == 0 and progress > 0:
                 telegram_bot.sende_nachricht(
                     f"Ingest {dcp_name}: {progress}% ({status_name})"
@@ -838,6 +894,7 @@ def _monitoring_ueberwachen(job_id):
                 letzter_progress = progress
 
             if status_code == 4:    # success
+                telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
                 break
             elif status_code in (5, 7):   # aborted / failed
                 raise RuntimeError(
@@ -845,45 +902,12 @@ def _monitoring_ueberwachen(job_id):
                 )
             elif status_code == 0:  # pending
                 warte_sek = time.time() - pending_seit
-
-                # Warnung nach 2 Min. – Doremi hat Ingest nicht automatisch gestartet
                 if warte_sek >= 120 and not pending_warnung_gesendet:
                     telegram_bot.sende_nachricht(
                         f"Ingest {dcp_name} seit {int(warte_sek/60)} Min. ausstehend.\n"
-                        f"Job läuft möglicherweise bereits – Doremi-Webinterface prüfen."
+                        f"Doremi-Webinterface prüfen."
                     )
                     pending_warnung_gesendet = True
-
-                # Alle 30 Sek. (ab 1 Min. Wartezeit): Scan nach manuell gestarteten Jobs
-                # Hintergrund: wenn job_id=0 ein Dummy ist, erstellt der manuelle Klick
-                # eine NEUE job_id (z.B. 1, 2, ...) mit status=running
-                if warte_sek >= 60 and (time.time() - letzter_scan_ts) >= 30:
-                    letzter_scan_ts = time.time()
-                    neuer_job = doremi_api.suche_laufenden_ingest_job(ip, max_scan=20)
-                    if neuer_job is not None and neuer_job != ingest_job_id:
-                        # Prüfen ob der gefundene Job bereits fertig (success) ist
-                        try:
-                            sc_neu, sn_neu, _ = doremi_api.ingest_status(ip, neuer_job)
-                        except Exception:
-                            sc_neu, sn_neu = 2, "running"
-                        log.info(
-                            f"[Monitoring] Job gefunden: "
-                            f"job_id={neuer_job}, status={sn_neu}({sc_neu})"
-                        )
-                        job_manager.speichere_ingest_id(job["id"], neuer_job)
-                        ingest_job_id = neuer_job
-                        pending_seit  = time.time()
-                        if sc_neu == 4:  # Bereits fertig!
-                            telegram_bot.sende_nachricht(
-                                f"Ingest {dcp_name} abgeschlossen "
-                                f"(job_id={neuer_job}, success)"
-                            )
-                            break  # Monitoring-Loop beenden
-                        telegram_bot.sende_nachricht(
-                            f"Ingest {dcp_name} gestartet! "
-                            f"Überwache Doremi job_id={neuer_job}..."
-                        )
-            # 2=running, 3=scheduled → weiter warten
 
         except (ConnectionError, OSError, TimeoutError) as e:
             log.warning(
@@ -893,7 +917,6 @@ def _monitoring_ueberwachen(job_id):
             continue
 
         time.sleep(10)
-    # Timeout ist kein harter Fehler – Ingest läuft weiter auf Doremi
 
     # FTP-Ordner auf Doremi aufräumen + DCP lokal ins Archiv verschieben
     _ftp_ordner_loeschen(cfg, dcp_name)
