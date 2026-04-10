@@ -737,8 +737,8 @@ def _ingest_starten(job_id):
     cfg       = lade_config()
     ip        = cfg["doremi"]["ip"]
     dcp_name  = job["final_name"]
-    http_user = cfg.get("doremi", {}).get("http_user", "admin")
-    http_pass = cfg.get("doremi", {}).get("http_pass", "1234")
+    http_user = cfg.get("doremi", {}).get("web_user", "admin")
+    http_pass = cfg.get("doremi", {}).get("web_pass", "1234")
 
     log = logging.getLogger("dcp_automatisierung")
 
