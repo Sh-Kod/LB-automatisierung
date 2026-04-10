@@ -336,13 +336,16 @@ def _ingest_add_job_einzel(ip, assetmap_pfad):
     return job_id
 
 
-def ingest_starten(ip, assetmap_pfad, content_uuid=None):
+def ingest_starten(ip, assetmap_pfad, content_uuid=None, extra_pfade=None):
     """
     Startet Ingest auf dem Doremi via TCP API.
 
     assetmap_pfad: Pfad zur ASSETMAP-Datei auf dem Doremi-Filesystem.
     content_uuid:  Optionale Content-UUID aus der ASSETMAP.xml (urn:uuid:...).
                    Wird als weitere Variante versucht, falls Pfade scheitern.
+    extra_pfade:   Optionale Liste zusätzlicher Pfade (z.B. SCP-Pfade nach
+                   /data/incoming/), die VOR den automatisch generierten
+                   Varianten versucht werden (höchste Priorität).
 
     Probiert automatisch mehrere Pfad-Varianten + UUID-Formate.
     Gibt die Ingest-Job-ID zurück (int).
@@ -357,6 +360,14 @@ def ingest_starten(ip, assetmap_pfad, content_uuid=None):
             f"urn:uuid:{uuid_clean}",   # vollständige URN
             uuid_clean,                  # nur UUID-String
         ]
+
+    # Extra-Pfade (z.B. SCP-Pfade /data/incoming/...) mit höchster Priorität
+    # Sie werden VOR den automatisch generierten FTP-Varianten versucht.
+    if extra_pfade:
+        seen = set(varianten)
+        prepend = [p for p in extra_pfade if p and p not in seen]
+        if prepend:
+            varianten = prepend + varianten
 
     log.info(f"[Doremi API] Versuche {len(varianten)} Varianten: {varianten}")
 

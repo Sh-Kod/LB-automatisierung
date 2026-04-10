@@ -688,6 +688,12 @@ def _ingest_starten(job_id):
     # FTP-Pfad /gui/ entspricht intern /incoming/gui/ auf dem Doremi-Dateisystem
     content_path = cfg.get("doremi", {}).get("content_path", "/incoming/gui")
 
+    # SCP-Konfiguration (SSH-Upload nach /data/incoming als Alternative zu FTP)
+    scp_path          = cfg.get("doremi", {}).get("scp_path",          "/data/incoming")
+    ssh_user          = cfg.get("doremi", {}).get("ssh_user",          "doremi")
+    ssh_pass          = cfg.get("doremi", {}).get("ssh_pass",          "doremi")
+    scp_ingest_aktiv  = cfg.get("doremi", {}).get("scp_ingest_enabled", True)
+
     # Schnell-Check: ist DCP überhaupt in /gui?
     if not _ftp_schnell_pruefen(cfg, dcp_name):
         telegram_bot.sende_nachricht(f"DCP '{dcp_name}' nicht in /gui – lade neu hoch...")
@@ -708,16 +714,12 @@ def _ingest_starten(job_id):
             f"Kein ASSETMAP-File in /gui/{dcp_name}/ gefunden. "
             f"FTP-Upload möglicherweise unvollständig."
         )
-    # Ingest-Pfad: FTP /gui/ = interner Dateisystem-Pfad /incoming/gui/
-    # Format: {content_path}/{dcp_name}/{assetmap_name}
+    # FTP-Ingest-Pfad: /incoming/gui/{dcp_name}/{assetmap_name}
     assetmap_pfad = f"{content_path}/{dcp_name}/{assetmap_name}"
-    logging.getLogger("dcp_automatisierung").info(
-        f"[Ingest] Starte IngestAddJob mit Pfad: {assetmap_pfad}"
-    )
 
-    # Ingest via nativer TCP API (Port 11730) starten
     from modules import doremi_api
     log = logging.getLogger("dcp_automatisierung")
+    log.info(f"[Ingest] FTP-Pfad für IngestAddJob: {assetmap_pfad}")
 
     # Diagnose: WhoAmI prüft ob TCP/KLV-Protokoll grundsätzlich antwortet
     try:
@@ -729,7 +731,62 @@ def _ingest_starten(job_id):
     # Content-UUID aus ASSETMAP.xml lesen (als Fallback für UUID-basiertes Ingest)
     content_uuid = _lese_assetmap_uuid(cfg, dcp_name, assetmap_name)
 
-    ingest_job_id = doremi_api.ingest_starten(ip, assetmap_pfad, content_uuid=content_uuid)
+    # ── SCP-Upload (Ergänzung zum FTP-Upload) ─────────────────────────────────
+    # Lädt DCP zusätzlich via SSH/SCP nach /data/incoming/{dcp_name}/.
+    # Hintergrund: Doremi DCP2000 hat SSH-Server (doremi/doremi).
+    # IngestAddJob mit Pfad /data/incoming/{name}/ASSETMAP.xml könnte funktionieren,
+    # wo der FTP-Pfad /incoming/gui/{name}/ASSETMAP.xml mit error_code=1 scheitert.
+    scp_pfad_varianten = []
+    dcp_pfad_lokal = os.path.join(cfg["ordner"]["dcp_ausgabe"], dcp_name)
+
+    if scp_ingest_aktiv and os.path.exists(dcp_pfad_lokal):
+        try:
+            from modules import scp_upload
+            log.info(f"[Ingest] SCP-Upload: {dcp_pfad_lokal} → {ip}:{scp_path}/{dcp_name}")
+            telegram_bot.sende_nachricht(
+                f"SCP-Upload zu Doremi /data/incoming/{dcp_name} ..."
+            )
+            scp_upload.upload_dcp(
+                ip, dcp_pfad_lokal, dcp_name, ssh_user, ssh_pass, scp_path
+            )
+            log.info("[Ingest] SCP-Upload erfolgreich – ergänze SCP-Pfade für IngestAddJob")
+            # SCP-Pfad-Varianten aufbauen (werden VOR FTP-Pfaden probiert)
+            am_ohne_xml = (
+                assetmap_name[:-4]
+                if assetmap_name.upper().endswith(".XML")
+                else assetmap_name
+            )
+            scp_pfad_varianten = [
+                f"{scp_path}/{dcp_name}/{assetmap_name}",  # /data/incoming/{n}/ASSETMAP.xml
+                f"{scp_path}/{dcp_name}/{am_ohne_xml}",     # /data/incoming/{n}/ASSETMAP
+                f"{scp_path}/{dcp_name}/",                  # /data/incoming/{n}/
+                f"{scp_path}/{dcp_name}",                   # /data/incoming/{n}
+            ]
+            time.sleep(2)  # kurz warten damit Doremi neuen Content erkennt
+        except RuntimeError as scp_err:
+            # paramiko nicht installiert → klare Fehlermeldung
+            log.warning(f"[Ingest] SCP-Upload nicht möglich: {scp_err}")
+            telegram_bot.sende_nachricht(
+                f"SCP-Upload nicht möglich:\n{str(scp_err)[:250]}\n"
+                f"Verwende FTP-Ingest..."
+            )
+        except Exception as scp_err:
+            log.warning(f"[Ingest] SCP-Upload fehlgeschlagen (nicht kritisch): {scp_err}")
+            telegram_bot.sende_nachricht(
+                f"SCP-Upload fehlgeschlagen – versuche FTP-Ingest:\n{str(scp_err)[:200]}"
+            )
+    elif scp_ingest_aktiv and not os.path.exists(dcp_pfad_lokal):
+        log.warning(
+            f"[Ingest] SCP-Upload: lokaler DCP-Ordner nicht gefunden: {dcp_pfad_lokal}"
+        )
+
+    # ── IngestAddJob ───────────────────────────────────────────────────────────
+    # SCP-Pfade haben höchste Priorität (extra_pfade), dann FTP-Pfade (assetmap_pfad).
+    ingest_job_id = doremi_api.ingest_starten(
+        ip, assetmap_pfad,
+        content_uuid=content_uuid,
+        extra_pfade=scp_pfad_varianten if scp_pfad_varianten else None,
+    )
 
     # Job-ID für Phase 5 (Monitoring) speichern
     job_manager.speichere_ingest_id(job_id, ingest_job_id)
@@ -1238,6 +1295,29 @@ def bearbeite_befehl(text):
         else:
             telegram_bot.sende_nachricht("Kein aktiver Ingest-Job gefunden zum Canceln.")
 
+    elif low == "/doremi_scp_test":
+        cfg      = lade_config()
+        ip       = cfg.get("doremi", {}).get("ip", "?")
+        ssh_user = cfg.get("doremi", {}).get("ssh_user", "doremi")
+        ssh_pass = cfg.get("doremi", {}).get("ssh_pass", "doremi")
+        scp_path = cfg.get("doremi", {}).get("scp_path", "/data/incoming")
+        telegram_bot.sende_nachricht(
+            f"Teste SSH-Verbindung zu {ssh_user}@{ip}:22 ..."
+        )
+        try:
+            from modules import scp_upload
+            ok, info = scp_upload.teste_verbindung(ip, ssh_user, ssh_pass)
+            status = "OK" if ok else "FEHLER"
+            telegram_bot.sende_nachricht(
+                f"SSH-Test: {status}\n"
+                f"{'─'*28}\n"
+                f"{info}\n"
+                f"{'─'*28}\n"
+                f"SCP-Ziel: {scp_path}"
+            )
+        except Exception as e:
+            telegram_bot.sende_nachricht(f"SSH-Test FEHLER: {e}")
+
     elif low == "/pause":
         pausiert = toggle_pause()
         if pausiert:
@@ -1273,6 +1353,7 @@ def bearbeite_befehl(text):
             f"/doremi_test           Doremi TCP-Verbindung testen\n"
             f"/doremi_ingest_scan    Aktive Ingest-Jobs suchen\n"
             f"/doremi_cancel_ingest  Pending Ingest-Job abbrechen\n"
+            f"/doremi_scp_test       SSH/SCP-Verbindung testen\n"
             f"{t}"
         )
 
