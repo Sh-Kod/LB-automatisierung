@@ -54,6 +54,90 @@ def _trenn():
     return "─" * 30
 
 # ──────────────────────────────────────────────
+# Anti-Spam Message Aggregator
+# ──────────────────────────────────────────────
+# Sammelt gleichartige Nachrichten aus parallelen Job-Threads und sendet
+# sie gebündelt sobald 3 Sekunden keine neue Nachricht gleichen Typs
+# eintrifft. Während des Naming-Dialogs werden Ingest-Meldungen
+# zurückgehalten und erst nach Ende des Dialogs gebündelt gesendet.
+
+_agg_lock   = threading.Lock()
+_agg_buffer = {}  # key → {"items": [...], "last_added": float, "formatter": fn}
+
+def _sammle(key, item, formatter):
+    """Fügt item zum Nachrichten-Puffer hinzu. Wird gebündelt gesendet."""
+    with _agg_lock:
+        if key not in _agg_buffer:
+            _agg_buffer[key] = {"items": [], "last_added": 0.0, "formatter": formatter}
+        _agg_buffer[key]["items"].append(item)
+        _agg_buffer[key]["last_added"] = time.time()
+
+def _agg_worker():
+    """Hintergrund-Thread: sendet gebündelte Nachrichten nach 3s Stille."""
+    while True:
+        time.sleep(1)
+        now = time.time()
+        with _naming_aktiv_lock:
+            naming = _naming_aktiv
+        with _agg_lock:
+            senden = {}
+            bleiben = {}
+            for key, data in _agg_buffer.items():
+                if now - data["last_added"] >= 3.0 and not naming:
+                    senden[key] = data
+                else:
+                    bleiben[key] = data
+            _agg_buffer.clear()
+            _agg_buffer.update(bleiben)
+        for key, data in senden.items():
+            try:
+                msg = data["formatter"](data["items"])
+                if msg:
+                    telegram_bot.sende_nachricht(msg)
+            except Exception:
+                pass
+
+# ── Formatter-Funktionen ──────────────────────
+
+def _fmt_upload_retry(namen):
+    if len(namen) == 1:
+        return f"DCP '{namen[0]}' nicht in /gui – lade neu hoch..."
+    auflistung = "\n".join(f"  – {n}" for n in namen)
+    return f"{len(namen)} DCPs nicht in /gui – lade neu hoch:\n{auflistung}"
+
+def _fmt_ingest_start(eintraege):
+    if len(eintraege) == 1:
+        n, pkl = eintraege[0]
+        return f"Starte Ingest:\n{n}\nPKL: {pkl}"
+    namen = "\n".join(f"  – {n}" for n, _ in eintraege)
+    return f"Starte Ingest für {len(eintraege)} DCPs:\n{namen}"
+
+def _fmt_ingest_pending(eintraege):
+    if len(eintraege) == 1:
+        n, jid = eintraege[0]
+        return f"Ingest gestartet: {n}\nDoremi job_id={jid} – warte auf Abschluss..."
+    namen = "\n".join(f"  – {n}" for n, _ in eintraege)
+    return f"Ingest gestartet ({len(eintraege)} DCPs) – warte auf Abschluss:\n{namen}"
+
+def _fmt_ingest_fertig(namen):
+    if len(namen) == 1:
+        return f"Ingest abgeschlossen: {namen[0]}"
+    t = _trenn()
+    auflistung = "\n".join(f"  ✓ {n}" for n in namen)
+    return f"{t}\nIngest abgeschlossen:\n{auflistung}\n{t}"
+
+def _fmt_ingest_warten(namen):
+    if len(namen) == 1:
+        return f"Ingest {namen[0]} läuft – warte auf Abschluss..."
+    return f"Ingest läuft – warte auf Abschluss ({len(namen)} DCPs)..."
+
+def _fmt_ingest_timeout(namen):
+    if len(namen) == 1:
+        return f"Ingest {namen[0]}: 30 Min. Timeout – bitte Doremi prüfen."
+    auflistung = "\n".join(f"  – {n}" for n in namen)
+    return f"Ingest Timeout ({len(namen)} DCPs) – bitte Doremi prüfen:\n{auflistung}"
+
+# ──────────────────────────────────────────────
 # Naming: Typ-Erkennung + Vorschlag
 # ──────────────────────────────────────────────
 
@@ -793,7 +877,7 @@ def _ingest_starten(job_id):
 
     # Schnell-Check: ist DCP überhaupt in /gui?
     if not _ftp_schnell_pruefen(cfg, dcp_name):
-        telegram_bot.sende_nachricht(f"DCP '{dcp_name}' nicht in /gui – lade neu hoch...")
+        _sammle("upload_retry", dcp_name, _fmt_upload_retry)
         _upload_durchfuehren(job_id)
 
     # FTP-Verify: warten bis DCP vollständig auf Doremi angekommen ist
@@ -827,9 +911,7 @@ def _ingest_starten(job_id):
         )
 
     # HTTP-Ingest via Doremi-Webinterface
-    telegram_bot.sende_nachricht(
-        f"Starte Ingest via Doremi-Webinterface:\n{dcp_name}\nPKL: {pkl_datei}"
-    )
+    _sammle("ingest_start", (dcp_name, pkl_datei), _fmt_ingest_start)
 
     phpsessid = doremi_web.login(ip, http_user, http_pass)
     doremi_web.starte_ingest(ip, phpsessid, dcp_name, pkl_datei)
@@ -858,10 +940,7 @@ def _ingest_starten(job_id):
         log.warning("[Ingest] Job-ID nicht ermittelbar – verwende Sentinel 0")
 
     job_manager.speichere_ingest_id(job_id, ingest_job_id)
-    telegram_bot.sende_nachricht(
-        f"Ingest gestartet: {dcp_name}\n"
-        f"Doremi job_id={ingest_job_id} – warte auf Abschluss..."
-    )
+    _sammle("ingest_pending", (dcp_name, ingest_job_id), _fmt_ingest_pending)
 
 
 def _ftp_ordner_existiert(cfg, dcp_name):
@@ -919,7 +998,7 @@ def _monitoring_ueberwachen(job_id):
                 try:
                     _, status = doremi_web.pruefe_ingest_status(ip, phpsessid, dcp_name)
                     if status == "success":
-                        telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
+                        _sammle("ingest_fertig", dcp_name, _fmt_ingest_fertig)
                         break
                     elif status == "error":
                         raise RuntimeError(
@@ -929,7 +1008,7 @@ def _monitoring_ueberwachen(job_id):
                         # Job nicht mehr auf Monitor-Seite (z.B. nach Doremi-Neustart)
                         # Fallback: FTP-Ordner-Check
                         if not _ftp_ordner_existiert(cfg, dcp_name):
-                            telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
+                            _sammle("ingest_fertig", dcp_name, _fmt_ingest_fertig)
                             break
                     # status == "pending": weiter warten
                 except RuntimeError:
@@ -943,17 +1022,15 @@ def _monitoring_ueberwachen(job_id):
             else:
                 # kein PHPSESSID → FTP-Fallback
                 if not _ftp_ordner_existiert(cfg, dcp_name):
-                    telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
+                    _sammle("ingest_fertig", dcp_name, _fmt_ingest_fertig)
                     break
 
             if not gemeldet and (time.time() - (deadline - 30 * 60)) > 120:
-                telegram_bot.sende_nachricht(f"Ingest {dcp_name} läuft – warte auf Abschluss...")
+                _sammle("ingest_warten", dcp_name, _fmt_ingest_warten)
                 gemeldet = True
             time.sleep(10)
         else:
-            telegram_bot.sende_nachricht(
-                f"Ingest {dcp_name}: 30 Min. Timeout – bitte Doremi prüfen."
-            )
+            _sammle("ingest_timeout", dcp_name, _fmt_ingest_timeout)
 
     else:
         # ── FTP-Monitoring (Fallback: job_id=0, Monitor-Seite nicht auswertbar) ─
@@ -965,15 +1042,13 @@ def _monitoring_ueberwachen(job_id):
             time.sleep(15)
             if not _ftp_ordner_existiert(cfg, dcp_name):
                 log.info(f"[Monitoring] FTP-Ordner verschwunden → Ingest abgeschlossen")
-                telegram_bot.sende_nachricht(f"Ingest abgeschlossen: {dcp_name}")
+                _sammle("ingest_fertig", dcp_name, _fmt_ingest_fertig)
                 break
             if not gemeldet and (time.time() - (deadline_ftp - 30 * 60)) > 120:
-                telegram_bot.sende_nachricht(f"Ingest {dcp_name} läuft – warte auf Abschluss...")
+                _sammle("ingest_warten", dcp_name, _fmt_ingest_warten)
                 gemeldet = True
         else:
-            telegram_bot.sende_nachricht(
-                f"Ingest {dcp_name}: 30 Min. Timeout – bitte Doremi prüfen."
-            )
+            _sammle("ingest_timeout", dcp_name, _fmt_ingest_timeout)
 
     # ── Aufräumen (gemeinsam für beide Pfade) ────────────────────────────────
     _ftp_ordner_loeschen(cfg, dcp_name)
@@ -1488,6 +1563,7 @@ if __name__ == "__main__":
     ).start()
 
     threading.Thread(target=queue_worker, daemon=True).start()
+    threading.Thread(target=_agg_worker, daemon=True).start()
 
     schedule.every(intervall).minutes.do(starte_verarbeitung).tag("scan")
     schedule.every(15).minutes.do(sende_status_update).tag("status")
