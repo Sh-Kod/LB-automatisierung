@@ -4,7 +4,8 @@ Prüft alle 60 Sekunden ob main.py noch läuft (via heartbeat.txt).
 Sendet Telegram-Benachrichtigung bei Ausfall und bei Wiederherstellung.
 
 Einrichten als NSSM-Service auf dem Server:
-  nssm install dcp_watchdog python C:\dcp_automatisierung\watchdog.py
+  nssm install dcp_watchdog "C:\\Python\\bin\\python.exe" "C:\\dcp_automatisierung\\watchdog.py"
+  nssm set dcp_watchdog AppRestartDelay 5000
   nssm start dcp_watchdog
 """
 
