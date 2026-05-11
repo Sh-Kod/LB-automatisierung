@@ -2,6 +2,11 @@
 
 ## Erledigt
 
+- **v2.51**: Fehlende "gestartet"-Meldung nach PC-Neustart behoben
+  - `modules/telegram_bot.py`: `sende_nachricht()` gibt jetzt `True`/`False` zurück (rückwärtskompatibel)
+  - `main.py`: `_sende_start_meldung()` – Retry-Thread sendet Start-Meldung alle 30s bis max. 10 Versuche (~5 Min), falls Netzwerk beim Boot noch nicht bereit
+  - `watchdog.py`: Sendet "DCP-Automatisierung wieder erreichbar." wenn Heartbeat nach Ausfall zurückkommt (doppelter Boden)
+
 - **v2.47**: HTTP-Monitoring über Doremi Monitor-Seite implementiert
   - `doremi_web.pruefe_ingest_status()` hinzugefügt: parst HTML-Tabelle, erkennt `success_16.png` / `error-icon-16.png` / `pending`
   - `_ingest_starten()`: Job-ID wird jetzt via HTTP Monitor-Seite ermittelt (4 Versuche à 2s), nicht mehr via KLV
@@ -23,6 +28,16 @@
 - **Praxis-Test**: 7 DCPs parallel ingestet in 1 Minute — vollständig erfolgreich
 - **README.md** erstellt mit Projektübersicht, Installation, Befehlen, Watchdog-Doku
 - **CLAUDE.md** und **CONTEXT.md** erstellt und gepflegt
+
+---
+
+## Geänderte Dateien (v2.51)
+
+- `main.py` – `_sende_start_meldung()` hinzugefügt, Startup-Meldung als Retry-Thread
+- `watchdog.py` – Recovery-Meldung "wieder erreichbar" ergänzt
+- `modules/telegram_bot.py` – `sende_nachricht()` gibt `True`/`False` zurück
+- `version.txt` – `2.51`
+- `update_manifest.json` – `version: 2.51`
 
 ---
 
