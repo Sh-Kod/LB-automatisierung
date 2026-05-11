@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh pr create --title 'v2.49: Watchdog-Heartbeat – Telegram-Benachrichtigung bei Absturz' --body ' *)",
+      "Bash(gh pr *)"
+    ]
+  }
+}
