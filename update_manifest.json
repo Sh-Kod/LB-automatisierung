@@ -1,7 +1,8 @@
 {
-  "version": "2.48",
+  "version": "2.49",
   "files": [
     {"src": "main.py",                      "dest": "C:\\dcp_automatisierung\\main.py"},
+    {"src": "watchdog.py",                  "dest": "C:\\dcp_automatisierung\\watchdog.py"},
     {"src": "updater.py",                   "dest": "C:\\dcp_automatisierung\\updater.py"},
     {"src": "modules/__init__.py",          "dest": "C:\\dcp_automatisierung\\modules\\__init__.py"},
     {"src": "modules/logger.py",            "dest": "C:\\dcp_automatisierung\\modules\\logger.py"},

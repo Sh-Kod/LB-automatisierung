@@ -1,3 +1,4 @@
+import atexit
 import base64
 import json
 import logging
@@ -5,6 +6,7 @@ import os
 import py_compile
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -19,6 +21,7 @@ from modules import analyzer, job_manager, queue_manager, telegram_bot, watcher
 
 CONFIG_PFAD       = "C:\\dcp_automatisierung\\config.yaml"
 VERSION_PFAD      = "C:\\dcp_automatisierung\\version.txt"
+HEARTBEAT_PFAD    = "C:\\dcp_automatisierung\\heartbeat.txt"
 RULES_PFAD        = "C:\\dcp_automatisierung\\rules\\naming_rules.yaml"
 STAGING_PFAD      = "C:\\dcp_automatisierung\\staging"
 PENDING_UPDATE_PFAD = "C:\\dcp_automatisierung\\pending_update.json"
@@ -52,6 +55,31 @@ def lese_version():
 
 def _trenn():
     return "─" * 30
+
+# ──────────────────────────────────────────────
+# Watchdog-Heartbeat
+# ──────────────────────────────────────────────
+
+def _heartbeat_worker():
+    """Schreibt alle 30 Sekunden einen Timestamp in heartbeat.txt (überschreibt, 1 Zeile)."""
+    while True:
+        try:
+            with open(HEARTBEAT_PFAD, "w", encoding="utf-8") as f:
+                f.write(str(time.time()))
+        except Exception:
+            pass
+        time.sleep(30)
+
+def _beende_handler():
+    """Wird bei sauberem Programmende aufgerufen – sendet Telegram-Meldung."""
+    try:
+        telegram_bot.sende_nachricht("DCP-Automatisierung wurde beendet.")
+    except Exception:
+        pass
+
+def _signal_handler(sig, frame):
+    _beende_handler()
+    raise SystemExit(0)
 
 # ──────────────────────────────────────────────
 # Anti-Spam Message Aggregator
@@ -1553,6 +1581,12 @@ if __name__ == "__main__":
     job_manager.setze_naming_check(lambda: _naming_aktiv)
 
     pruefe_update_ergebnis()
+
+    atexit.register(_beende_handler)
+    signal.signal(signal.SIGINT,  _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+    threading.Thread(target=_heartbeat_worker, daemon=True).start()
 
     telegram_bot.sende_nachricht(f"DCP-Automatisierung v{lese_version()} gestartet.")
 
