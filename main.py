@@ -70,8 +70,14 @@ def _heartbeat_worker():
             pass
         time.sleep(30)
 
+_beende_gesendet = False
+
 def _beende_handler():
-    """Wird bei sauberem Programmende aufgerufen – sendet Telegram-Meldung."""
+    """Wird bei sauberem Programmende aufgerufen – sendet Telegram-Meldung (nur einmal)."""
+    global _beende_gesendet
+    if _beende_gesendet:
+        return
+    _beende_gesendet = True
     try:
         telegram_bot.sende_nachricht("DCP-Automatisierung wurde beendet.")
     except Exception:
