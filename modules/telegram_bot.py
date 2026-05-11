@@ -25,8 +25,10 @@ def sende_nachricht(text):
         chat_id = config["telegram"]["chat_id"]
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         requests.post(url, data={"chat_id": chat_id, "text": text}, timeout=10)
+        return True
     except Exception as e:
         print(f"Telegram Fehler: {e}")
+        return False
 
 def sende_bild(bildpfad, caption=""):
     """Sendet ein Bild an Telegram. Verkleinert automatisch wenn > 5 MB oder > 2560 px."""

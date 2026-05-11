@@ -87,6 +87,14 @@ def _signal_handler(sig, frame):
     _beende_handler()
     raise SystemExit(0)
 
+def _sende_start_meldung():
+    """Sendet Start-Meldung mit Retry, falls Netzwerk beim Boot noch nicht bereit ist."""
+    version = lese_version()
+    for _ in range(10):
+        if telegram_bot.sende_nachricht(f"DCP-Automatisierung v{version} gestartet."):
+            return
+        time.sleep(30)
+
 # ──────────────────────────────────────────────
 # Anti-Spam Message Aggregator
 # ──────────────────────────────────────────────
@@ -1594,7 +1602,7 @@ if __name__ == "__main__":
 
     threading.Thread(target=_heartbeat_worker, daemon=True).start()
 
-    telegram_bot.sende_nachricht(f"DCP-Automatisierung v{lese_version()} gestartet.")
+    threading.Thread(target=_sende_start_meldung, daemon=True).start()
 
     threading.Thread(
         target=telegram_bot.starte_listener,

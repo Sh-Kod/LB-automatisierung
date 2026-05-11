@@ -73,8 +73,7 @@ def main():
 
         elif alter <= TIMEOUT_SEKUNDEN and ausgefallen:
             ausgefallen = False
-            # Hinweis: main.py sendet selbst eine "gestartet"-Nachricht –
-            # der Watchdog sendet hier nichts, um doppelte Meldungen zu vermeiden.
+            _sende_nachricht("DCP-Automatisierung wieder erreichbar.")
             print("Heartbeat wieder aktiv.")
 
 
