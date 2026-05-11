@@ -1,5 +1,13 @@
 # CLAUDE.md – LB-Automatisierung
 
+## Session-Start (PFLICHT)
+
+Zu Beginn jeder Session **immer zuerst lesen**:
+1. `CONTEXT.md` – erledigter Stand, offene Probleme, nächste Schritte
+2. `README.md` – Projektübersicht, Architektur, Befehle
+
+---
+
 ## Projektbeschreibung
 
 Automatisierungssystem für Lichtblick-Kinoprogramm (LB) auf Windows.
