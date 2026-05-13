@@ -2,6 +2,12 @@
 
 ## Erledigt
 
+- **v2.52**: Watchdog-Falschmeldungen beim Start behoben
+  - `watchdog.py`: 5-Minuten Grace-Period (`STARTVERZOEGERUNG = 300`) vor dem ersten Heartbeat-Check
+  - Verhindert Falschalarm wenn Watchdog-Service neustartet und main.py noch nicht läuft
+
+
+
 - **v2.51**: Fehlende "gestartet"-Meldung nach PC-Neustart behoben
   - `modules/telegram_bot.py`: `sende_nachricht()` gibt jetzt `True`/`False` zurück (rückwärtskompatibel)
   - `main.py`: `_sende_start_meldung()` – Retry-Thread sendet Start-Meldung alle 30s bis max. 10 Versuche (~5 Min), falls Netzwerk beim Boot noch nicht bereit
@@ -28,6 +34,14 @@
 - **Praxis-Test**: 7 DCPs parallel ingestet in 1 Minute — vollständig erfolgreich
 - **README.md** erstellt mit Projektübersicht, Installation, Befehlen, Watchdog-Doku
 - **CLAUDE.md** und **CONTEXT.md** erstellt und gepflegt
+
+---
+
+## Geänderte Dateien (v2.52)
+
+- `watchdog.py` – `STARTVERZOEGERUNG = 300` + initialer Sleep vor der Hauptschleife
+- `version.txt` – `2.52`
+- `update_manifest.json` – `version: 2.52`
 
 ---
 
@@ -62,5 +76,5 @@
 
 ## Nächster Schritt
 
-- Normalbetrieb beobachten
-- Bei Bedarf: Aggregator auch für Upload-Phase-Meldungen erweitern
+- v2.52 deployen (`/update` via Telegram)
+- Normalbetrieb beobachten — Falschmeldungen sollten nicht mehr auftreten

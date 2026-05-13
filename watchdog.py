@@ -46,9 +46,16 @@ def _lese_heartbeat():
         return None
 
 
+STARTVERZOEGERUNG = 300  # 5 Min Grace-Period beim Start (main.py braucht Zeit)
+
+
 def main():
     print("Watchdog gestartet.")
     ausgefallen = False
+
+    # Beim ersten Start längere Grace-Period: main.py braucht Zeit zum Hochfahren
+    print(f"Warte {STARTVERZOEGERUNG}s Grace-Period...")
+    time.sleep(STARTVERZOEGERUNG)
 
     while True:
         time.sleep(PRUEF_INTERVALL)
