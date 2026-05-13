@@ -1,5 +1,5 @@
 {
-  "version": "2.51",
+  "version": "2.52",
   "files": [
     {"src": "main.py",                      "dest": "C:\\dcp_automatisierung\\main.py"},
     {"src": "watchdog.py",                  "dest": "C:\\dcp_automatisierung\\watchdog.py"},
