@@ -2,6 +2,12 @@
 
 ## Erledigt
 
+- **v2.53**: Updater stoppt/startet jetzt auch den Watchdog-Service
+  - `updater.py`: `stoppe_alle()` / `starte_alle()` – beide Services (`dcp_automatisierung` + `dcp_watchdog`) werden gemeinsam verwaltet
+  - Reihenfolge: Watchdog ZUERST stoppen (kein Falschalarm während main.py stoppt), main.py ZUERST starten (heartbeat sofort frisch bevor Watchdog prüft)
+  - Behebt das Problem dass der Watchdog-Service mit altem Code im RAM weiterlief, obwohl `watchdog.py` aktualisiert wurde → neue Watchdog-Versionen werden jetzt automatisch aktiv
+  - Behebt Falschalarm "Heartbeat-Datei fehlt" während `/update`, der vorher gesendet wurde weil der Watchdog während des Service-Stopps von main.py weiterlief
+
 - **v2.52**: Watchdog-Falschmeldungen beim Start behoben
   - `watchdog.py`: 5-Minuten Grace-Period (`STARTVERZOEGERUNG = 300`) vor dem ersten Heartbeat-Check
   - Verhindert Falschalarm wenn Watchdog-Service neustartet und main.py noch nicht läuft
@@ -34,6 +40,14 @@
 - **Praxis-Test**: 7 DCPs parallel ingestet in 1 Minute — vollständig erfolgreich
 - **README.md** erstellt mit Projektübersicht, Installation, Befehlen, Watchdog-Doku
 - **CLAUDE.md** und **CONTEXT.md** erstellt und gepflegt
+
+---
+
+## Geänderte Dateien (v2.53)
+
+- `updater.py` – `WATCHDOG_SERVICE` Konstante, generische `_stoppe()`/`_starte()`, neue Helfer `stoppe_alle()`/`starte_alle()`
+- `version.txt` – `2.53`
+- `update_manifest.json` – `version: 2.53`
 
 ---
 
@@ -76,5 +90,9 @@
 
 ## Nächster Schritt
 
-- v2.52 deployen (`/update` via Telegram)
-- Normalbetrieb beobachten — Falschmeldungen sollten nicht mehr auftreten
+- v2.53 deployen (`/update` via Telegram)
+- **Wichtig (einmalig):** Da v2.53 selbst der Fix für den nicht-neugestarteten Watchdog ist,
+  muss auf BEIDEN Standorten der Watchdog-Service einmalig manuell neu gestartet werden,
+  damit v2.52/v2.53 Code aktiv wird:
+  `nssm restart dcp_watchdog`
+  Ab v2.53 erledigt der Updater das selbst.

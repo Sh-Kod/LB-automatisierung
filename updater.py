@@ -17,6 +17,7 @@ RESULT_PFAD = os.path.join(BASE_PFAD, "update_result.json")
 BACKUP_PFAD = os.path.join(BASE_PFAD, "backup")
 NSSM = "C:\\nssm\\nssm.exe"
 SERVICE = "dcp_automatisierung"
+WATCHDOG_SERVICE = "dcp_watchdog"
 LOG_PFAD = os.path.join(BASE_PFAD, "logs", "updater.log")
 
 
@@ -48,44 +49,57 @@ def schreibe_result(erfolg, neue_version="", fehler=""):
         log(f"Konnte update_result.json nicht schreiben: {e}")
 
 
-def stoppe_service():
-    log("Stoppe Service...")
+def _stoppe(service_name):
+    log(f"Stoppe Service: {service_name}...")
     try:
         proc = subprocess.Popen(
-            [NSSM, "stop", SERVICE],
+            [NSSM, "stop", service_name],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         proc.wait(timeout=30)
     except Exception as e:
-        log(f"nssm stop Fehler: {e}")
+        log(f"nssm stop ({service_name}) Fehler: {e}")
     for _ in range(20):
         time.sleep(2)
         try:
             r = subprocess.run(
-                ["sc", "query", SERVICE],
+                ["sc", "query", service_name],
                 capture_output=True, text=True, timeout=10
             )
             if "STOPPED" in r.stdout:
-                log("Service gestoppt.")
+                log(f"Service {service_name} gestoppt.")
                 return True
         except Exception:
             pass
-    log("Service stop timeout - fahre trotzdem fort.")
+    log(f"Service {service_name} stop timeout - fahre trotzdem fort.")
     return True
 
 
-def starte_service():
-    log("Starte Service...")
+def _starte(service_name):
+    log(f"Starte Service: {service_name}...")
     try:
         proc = subprocess.Popen(
-            [NSSM, "start", SERVICE],
+            [NSSM, "start", service_name],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         proc.wait(timeout=30)
         time.sleep(3)
-        log("Service gestartet.")
+        log(f"Service {service_name} gestartet.")
     except Exception as e:
-        log(f"nssm start Fehler: {e}")
+        log(f"nssm start ({service_name}) Fehler: {e}")
+
+
+def stoppe_alle():
+    # Watchdog ZUERST stoppen, damit er beim Stopp von main.py keine Falschmeldung sendet
+    _stoppe(WATCHDOG_SERVICE)
+    _stoppe(SERVICE)
+
+
+def starte_alle():
+    # main.py zuerst, damit heartbeat.txt sofort geschrieben wird,
+    # bevor der Watchdog den ersten Check macht
+    _starte(SERVICE)
+    _starte(WATCHDOG_SERVICE)
 
 
 def erstelle_backup(dateien, backup_dir):
@@ -159,8 +173,8 @@ def main():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = os.path.join(BACKUP_PFAD, f"v{neue_version}_{ts}")
 
-    # Service stoppen (stoppt auch den laufenden main.py-Prozess)
-    stoppe_service()
+    # Services stoppen (Watchdog zuerst, damit er keinen Falschalarm sendet)
+    stoppe_alle()
     time.sleep(2)
 
     # Backup erstellen
@@ -169,7 +183,7 @@ def main():
     except Exception as e:
         log(f"Backup fehlgeschlagen: {e}")
         schreibe_result(False, neue_version, f"Backup fehlgeschlagen: {e}")
-        starte_service()
+        starte_alle()
         sys.exit(1)
 
     # Update anwenden
@@ -184,7 +198,7 @@ def main():
         except Exception as re:
             log(f"Rollback fehlgeschlagen: {re}")
         schreibe_result(False, neue_version, str(e))
-        starte_service()
+        starte_alle()
         sys.exit(1)
 
     # version.txt aktualisieren
@@ -214,8 +228,8 @@ def main():
     schreibe_result(True, neue_version)
     log(f"Update auf v{neue_version} erfolgreich abgeschlossen!")
 
-    # Service neu starten
-    starte_service()
+    # Services neu starten (main.py zuerst, dann Watchdog mit neuem Code)
+    starte_alle()
 
     # Task Scheduler Aufgabe aufraeumen
     try:

@@ -40,11 +40,15 @@ Das ist der primäre Erfolgsindikator.
 ```bash
 python main.py          # direkt starten
 # Deploy: /update via Telegram → updater.py (Taskplaner)
-# Branch: claude/check-github-access-JYt09 (nie main!)
 ```
 
 Workflow: besprechen → Bestätigung abwarten → lesen → ändern →
-`version.txt` + `update_manifest.json` bump → commit + push
+`version.txt` + `update_manifest.json` bump → commit + push auf Feature-Branch →
+**PR nach `main` erstellen** → User mergt → `/update` via Telegram
+
+**WICHTIG:** Der Server überwacht nur `main`. Nach jedem Push immer sofort
+einen PR nach `main` erstellen (`gh pr create --base main`).
+Ohne PR → kein Update auf dem Server.
 
 **Nie:** KLV, direktes `sende_nachricht()` aus Threads,
 Code ohne explizite Bestätigung ("einverstanden" / "mach das"), Feature-Creep
