@@ -1,5 +1,5 @@
 {
-  "version": "2.53",
+  "version": "2.54",
   "files": [
     {"src": "main.py",                      "dest": "C:\\dcp_automatisierung\\main.py"},
     {"src": "watchdog.py",                  "dest": "C:\\dcp_automatisierung\\watchdog.py"},
@@ -13,6 +13,10 @@
     {"src": "modules/job_manager.py",       "dest": "C:\\dcp_automatisierung\\modules\\job_manager.py"},
     {"src": "modules/doremi_api.py",        "dest": "C:\\dcp_automatisierung\\modules\\doremi_api.py"},
     {"src": "modules/scp_upload.py",        "dest": "C:\\dcp_automatisierung\\modules\\scp_upload.py"},
-    {"src": "modules/doremi_web.py",        "dest": "C:\\dcp_automatisierung\\modules\\doremi_web.py"}
+    {"src": "modules/doremi_web.py",        "dest": "C:\\dcp_automatisierung\\modules\\doremi_web.py"},
+    {"src": "modules/naming_engine.py",     "dest": "C:\\dcp_automatisierung\\modules\\naming_engine.py"},
+    {"src": "modules/naming_resolver.py",   "dest": "C:\\dcp_automatisierung\\modules\\naming_resolver.py"},
+    {"src": "modules/naming_ocr.py",        "dest": "C:\\dcp_automatisierung\\modules\\naming_ocr.py"},
+    {"src": "modules/naming_integration.py","dest": "C:\\dcp_automatisierung\\modules\\naming_integration.py"}
   ]
 }
