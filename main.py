@@ -17,7 +17,7 @@ from datetime import datetime
 import schedule
 import yaml
 
-from modules import analyzer, job_manager, queue_manager, telegram_bot, watcher
+from modules import analyzer, job_manager, naming_integration, queue_manager, telegram_bot, watcher
 
 CONFIG_PFAD       = "C:\\dcp_automatisierung\\config.yaml"
 VERSION_PFAD      = "C:\\dcp_automatisierung\\version.txt"
@@ -356,52 +356,15 @@ def queue_worker():
             except Exception:
                 telegram_bot.sende_nachricht(f"Bild: {os.path.basename(bildpfad)}")
 
-            # JPG-Dateiname als primärer Vorschlag
-            jpg_dateiname = os.path.splitext(os.path.basename(bildpfad))[0]
-            jpg_vorschlag = _bereinige_dcp_name(jpg_dateiname) if jpg_dateiname else None
-            if not jpg_vorschlag:
-                jpg_vorschlag = None
+            # Smart Hybrid Naming Pipeline (Parser + OCR + Resolver + DCP-Vorschlag)
+            cfg = lade_config()
+            tesseract_cmd = (cfg.get("tesseract") or {}).get("pfad", "")
+            naming_res = naming_integration.process_image_naming(
+                bildpfad,
+                tesseract_cmd=tesseract_cmd,
+            )
 
-            # OCR + Typ-Erkennung (sekundär)
-            ocr_text = ""
-            try:
-                ocr_text = analyzer.lese_text_aus_bild(bildpfad)
-            except Exception:
-                pass
-
-            typ, ocr_vorschlag = _erkenne_typ_und_vorschlag(ocr_text)
-
-            # Dialog aufbauen
-            t = _trenn()
-            msg = f"{t}\n"
-            if jpg_vorschlag:
-                msg += f"Dateiname:\n{jpg_vorschlag}\n\n"
-            if ocr_text:
-                msg += f"OCR-Text:\n{ocr_text[:200].strip()}\n\n"
-            if typ:
-                msg += f"Typ erkannt: {typ}\n\n"
-            if ocr_vorschlag:
-                msg += f"OCR-Vorschlag:\n{ocr_vorschlag}\n\n"
-
-            if jpg_vorschlag and ocr_vorschlag:
-                msg += "[1]  Dateinamen übernehmen\n"
-                msg += "[2]  OCR-Vorschlag übernehmen\n"
-                msg += "[3]  Eigenen Namen eingeben\n"
-                msg += "[4]  Überspringen\n"
-            elif jpg_vorschlag:
-                msg += "[1]  Dateinamen übernehmen\n"
-                msg += "[2]  Eigenen Namen eingeben\n"
-                msg += "[3]  Überspringen\n"
-            elif ocr_vorschlag:
-                msg += "[1]  OCR-Vorschlag übernehmen\n"
-                msg += "[2]  Eigenen Namen eingeben\n"
-                msg += "[3]  Überspringen\n"
-            else:
-                msg += "Kein Vorschlag – bitte Namen eingeben\n\n"
-                msg += "[1]  Namen eingeben\n"
-                msg += "[2]  Überspringen\n"
-            msg += f"{t}\n(Timeout: 60 Min)"
-            telegram_bot.sende_nachricht(msg)
+            telegram_bot.sende_nachricht(naming_res.dialog_message)
 
             # Auswahl abwarten
             antwort = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
@@ -409,66 +372,60 @@ def queue_worker():
                 _dialog_zeitüberschreitung(item["id"])
                 continue
 
-            a = antwort.strip()
+            aktion, wert = naming_integration.evaluate_dialog_response(
+                antwort, naming_res.options
+            )
             final_name = None
             skip = False
 
-            if jpg_vorschlag and ocr_vorschlag:
-                if a == "1":
-                    final_name = jpg_vorschlag
-                elif a == "2":
-                    final_name = ocr_vorschlag
-                elif a == "3":
-                    telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
-                    a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
-                    if a2 is None:
-                        _dialog_zeitüberschreitung(item["id"])
-                        continue
-                    final_name = a2.strip()
-                elif a in ("4", "/skip"):
+            if aktion == naming_integration.ACTION_SKIP:
+                skip = True
+            elif aktion == naming_integration.ACTION_SET_NAME:
+                final_name = wert
+            elif aktion == naming_integration.ACTION_ASK_DATE:
+                telegram_bot.sende_nachricht("Bitte Datum eingeben (TT_MM, z.B. 18_10):")
+                a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
+                if a2 is None:
+                    _dialog_zeitüberschreitung(item["id"])
+                    continue
+                if (a2.strip()).lower() == "/skip":
                     skip = True
                 else:
-                    final_name = a  # direkte Namenseingabe
-            elif jpg_vorschlag:
-                if a == "1":
-                    final_name = jpg_vorschlag
-                elif a == "2":
-                    telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
-                    a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
-                    if a2 is None:
-                        _dialog_zeitüberschreitung(item["id"])
-                        continue
-                    final_name = a2.strip()
-                elif a in ("3", "/skip"):
+                    user_date = a2.strip()
+                    final_name = naming_integration.build_dcp_name(
+                        category=naming_res.resolved.category.value,
+                        title=naming_res.resolved.title.value,
+                        date=user_date,
+                    )
+                    if not final_name:
+                        final_name = user_date
+            elif aktion == naming_integration.ACTION_ASK_TITLE:
+                telegram_bot.sende_nachricht("Bitte Filmtitel eingeben:")
+                a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
+                if a2 is None:
+                    _dialog_zeitüberschreitung(item["id"])
+                    continue
+                if (a2.strip()).lower() == "/skip":
                     skip = True
                 else:
-                    final_name = a
-            elif ocr_vorschlag:
-                if a == "1":
-                    final_name = ocr_vorschlag
-                elif a == "2":
-                    telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
-                    a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
-                    if a2 is None:
-                        _dialog_zeitüberschreitung(item["id"])
-                        continue
-                    final_name = a2.strip()
-                elif a in ("3", "/skip"):
+                    user_title = a2.strip()
+                    final_name = naming_integration.build_dcp_name(
+                        category=naming_res.resolved.category.value,
+                        title=user_title,
+                        date=naming_res.resolved.date.value,
+                    )
+                    if not final_name:
+                        final_name = user_title
+            elif aktion == naming_integration.ACTION_ASK_CUSTOM:
+                telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
+                a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
+                if a2 is None:
+                    _dialog_zeitüberschreitung(item["id"])
+                    continue
+                if (a2.strip()).lower() == "/skip":
                     skip = True
                 else:
-                    final_name = a
-            else:
-                if a == "1":
-                    telegram_bot.sende_nachricht("Bitte DCP-Namen eingeben:")
-                    a2 = telegram_bot.warte_auf_dialog_antwort(timeout=3600)
-                    if a2 is None:
-                        _dialog_zeitüberschreitung(item["id"])
-                        continue
                     final_name = a2.strip()
-                elif a in ("2", "/skip"):
-                    skip = True
-                else:
-                    final_name = a
 
             if skip or (final_name or "").lower() == "/skip":
                 queue_manager.abschliessen(item["id"])
